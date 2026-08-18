@@ -41,10 +41,13 @@
             cargoLock.lockFile = ./Cargo.lock;
             meta.mainProgram = "claude-router";
           };
-          # Claude Code pointed at the router. ANTHROPIC_BASE_URL is the only
-          # thing changed; the credential flow stays Claude Code's own.
+          # Claude Code pointed at the router; the credential flow stays
+          # Claude Code's own. Gateway model discovery makes it fetch
+          # GET /v1/models from the router at startup, so the providers'
+          # anthropic/<id> aliases appear in the /model picker.
           claude-routed = pkgs.writeShellScriptBin "claude-routed" ''
             export ANTHROPIC_BASE_URL="''${CLAUDE_ROUTER_URL:-http://127.0.0.1:8787}"
+            export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
             exec ${pkgs.claude-code}/bin/claude "$@"
           '';
         in
