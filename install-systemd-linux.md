@@ -3,7 +3,7 @@
 > Unsupported. NixOS is what the author runs and tests; these instructions
 > should work, but you are on your own if they do not.
 
-## Build
+## 1. Build
 
 Needs a Rust toolchain (1.85+) and a C linker.
 
@@ -14,41 +14,29 @@ $ cargo build --release
 $ install -Dm755 target/release/claude-router ~/.local/bin/claude-router
 ```
 
-## Configure
+## 2. Install the service
 
-`~/.config/claude-router/config.toml`, which never holds credentials:
+Pick one. Both are socket-activated: systemd holds `127.0.0.1:8787`, starts
+the daemon on Claude Code's first request, and it exits after 300 idle
+seconds.
 
-```toml
-restrict_to_owner = true                    # only your uid may connect
-picker_model = "deepseek/pro"                # which model fills /model
+|  | User service | System-wide |
+| --- | --- | --- |
+| Units in | `~/.config/systemd/user` | `/etc/systemd/system` |
+| Users per machine | one per port | any number, one port |
 
-[providers.deepseek]
-preset = "deepseek"
+The two are equally secure. In both, the port is loopback-only, credentials
+live in one user's own files, and the daemon identifies its caller by the uid
+the kernel reports for the connection rather than anything the client claims.
+The system-wide unit additionally runs as `DynamicUser` with
+`ProtectHome=read-only`, so it reads each user's config and credentials and
+can never write to them.
 
-[providers.codex]
-preset = "codex"
-```
+Prefer system-wide on a machine with more than one user: a user service per
+person would need a distinct port each, since the first to start takes 8787
+and the rest fail to bind.
 
-A preset supplies the endpoint, API dialect, models and effort mapping;
-anything beside it overrides that. Without one, spell it out:
-
-```toml
-[providers.glm]
-base_url = "https://api.z.ai/api/paas/v4"
-api = "openai"                              # openai | anthropic | responses
-models = [{ id = "glm-4.7", name = "GLM 4.7" }]
-
-[providers.glm.effort]                      # optional
-field = "reasoning_effort"
-map = { low = "low", medium = "medium", high = "high" }
-```
-
-## Run it
-
-A user service, socket-activated so it starts on Claude Code's first request
-and exits when unused.
-
-`~/.config/systemd/user/claude-router.socket`:
+Both use the same socket unit:
 
 ```ini
 [Socket]
@@ -58,7 +46,9 @@ ListenStream=127.0.0.1:8787
 WantedBy=sockets.target
 ```
 
-`~/.config/systemd/user/claude-router.service`:
+### User service
+
+`claude-router.service`:
 
 ```ini
 [Unit]
@@ -76,14 +66,17 @@ $ systemctl --user daemon-reload
 $ systemctl --user enable --now claude-router.socket
 ```
 
-### Machine-wide instead
+`loginctl enable-linger $USER` keeps it available while you are logged out.
 
-One daemon for everyone: it resolves each connecting uid to that user's home
-and reads their own config and credentials, so nothing personal is configured
-system-wide. Use `/etc/systemd/system/claude-router.{socket,service}` with the
-same socket, and:
+### System-wide
+
+`claude-router.service`, with the binary in `/usr/local/bin`:
 
 ```ini
+[Unit]
+Requires=claude-router.socket
+After=claude-router.socket
+
 [Service]
 ExecStart=/usr/local/bin/claude-router --daemon --listen 127.0.0.1:8787 \
           --user-config --idle-timeout 300
@@ -101,32 +94,61 @@ RestrictNamespaces=true
 CapabilityBoundingSet=
 ```
 
-`ProtectHome=read-only` is required: the daemon reads users' configs and
-credentials and never writes to them. Leave `restrict_to_owner` out here — the
-daemon's own uid is not the users'. To limit who may connect, list them with
-`allowed_uids = [1000, 1001]`.
+`--user-config` is what resolves each connecting uid to its home. Leave
+`restrict_to_owner` out of the config here — the daemon's own uid is not the
+users'; to limit who may connect, use `allowed_uids = [1000, 1001]`.
 
-Several *user* services on one machine would each need a different port; a
-single system service avoids that.
+## 3. Configure providers
 
-## Credentials
+`~/.config/claude-router/config.toml`, per user in both deployments:
 
-Per provider, in order: a systemd credential
-(`LoadCredential=deepseek:/path/to/key`), the store at
-`~/.local/state/claude-router/credentials/<provider>`, then
-`<PROVIDER>_API_KEY`.
+```toml
+restrict_to_owner = true       # user service only
+picker_model = "deepseek/pro"  # fills Claude Code's one custom /model entry
+
+[providers.deepseek]
+preset = "deepseek"
+
+[providers.codex]
+preset = "codex"
+```
+
+A preset supplies the endpoint, API dialect, models and effort mapping;
+anything beside it overrides that. Without one, spell it out:
+
+```toml
+[providers.glm]
+base_url = "https://api.z.ai/api/paas/v4"
+api = "openai"                              # openai | anthropic | responses
+models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
+
+[providers.glm.effort]                      # optional
+field = "reasoning_effort"
+map = { low = "low", medium = "medium", high = "high" }
+```
+
+## 4. Set credentials
+
+Never in the config file. Per provider, first match wins:
+
+| Source | Where |
+| --- | --- |
+| systemd credential | `LoadCredential=<provider>:/path/to/key` |
+| credential store | `~/.local/state/claude-router/credentials/<provider>` |
+| environment | `<PROVIDER>_API_KEY` |
 
 ```console
 $ claude-router               # TUI: [s]et an API key, [l]og in, [c]lear
-$ claude-router login codex   # same browser sign-in, from the shell
+$ claude-router login codex   # the same browser sign-in, from the shell
 ```
 
 A request to a provider with no credential fails with an error naming it.
 
-## Point Claude Code at the router
+## 5. Point Claude Code at the router
 
-Save as `~/.local/bin/claude-routed`, or as `claude` if you would rather it
-shadow the plain CLI:
+Save as `~/.local/bin/claude-routed`, or as `claude` to shadow the plain CLI
+— then point `exec` at the real binary's full path so it does not call
+itself.
 
 ```bash
 #!/usr/bin/env bash
@@ -144,12 +166,12 @@ fi
 exec claude "$@"
 ```
 
-If you name it `claude`, point `exec` at the real binary's full path.
-
 ## Agents
 
-The models that did not win the picker slot stay selectable as subagents.
-`~/.claude/agents/flash.md`:
+Agents are what mix providers inside a session: each names its own model and
+effort, so a conversation can delegate to another provider and carry on.
+Claude Code shows only one custom model in `/model` (`picker_model` chooses
+it); agents have no such limit. `~/.claude/agents/flash.md`:
 
 ```markdown
 ---
@@ -163,7 +185,10 @@ tools: Read, Grep, Glob
 You make small mechanical changes exactly as asked.
 ```
 
-## Checking it
+Models can be named by full ID, by shorthand, or qualified: `sol`,
+`codex/sol`, `gpt-5.6-sol`.
+
+## Troubleshooting
 
 ```console
 $ curl -s http://127.0.0.1:8787/__router/providers | jq

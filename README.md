@@ -1,15 +1,17 @@
 # claude-code-transparent-router
 
-A loopback HTTP router for Claude Code. Point Claude Code at it instead of
-`api.anthropic.com` and models from other providers appear in the model
-picker, while Anthropic traffic is forwarded byte for byte.
+Mix providers inside a single Claude Code session. Keep Claude as the model
+you talk to and hand work to subagents running on DeepSeek or GPT — or make
+one of those the main model instead. It is a loopback HTTP router: point
+Claude Code at it instead of `api.anthropic.com`.
 
 ## Features
 
-- Use other providers' models in Claude Code.
+- **Mix providers in one session.** Subagents run on whichever provider you
+  give them, so a conversation can delegate to DeepSeek or GPT and carry on.
+- **Start a subagent on another provider directly.** Each agent names its own
+  model and reasoning effort.
 - Use a ChatGPT subscription instead of metered API billing.
-- Reach several routed models, despite Claude Code's single custom picker
-  slot.
 - Serve several users from one daemon, each with their own providers and
   credentials.
 - Anthropic models keep working unchanged: same bytes, same streaming, same
@@ -66,9 +68,24 @@ models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
 ```
 
 Select a model as `sol`, `codex/sol`, or `gpt-5.6-sol`. Names must be unique
-across providers, checked at startup. Models beyond the picker slot are
-reachable by name or through generated subagents. Reasoning effort is
-translated to each provider's own field and levels.
+across providers, checked at startup.
+
+Subagents are what make a session mixed: each names a model and, optionally,
+an effort level. Claude Code shows only one custom model in `/model`
+(`picker_model` chooses it), but an agent's frontmatter has no such limit.
+
+```markdown
+---
+name: flash
+description: Cheap, fast helper for mechanical edits.
+model: deepseek/flash
+effort: low
+---
+```
+
+On NixOS these are generated from your configuration, including into several
+Claude Code directories at once. Reasoning effort is translated to each
+provider's own field and levels.
 
 ## Development
 

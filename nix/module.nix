@@ -42,9 +42,8 @@ in
       defaultText = lib.literalExpression "pkgs.claude-code";
       example = lib.literalExpression "inputs.claude-code-nix.packages.\${system}.default";
       description = ''
-        Claude Code package the wrapper launches. Defaults to the one in the
-        nixpkgs this module is evaluated with (including any overlay you
-        already apply); set it to use a different source.
+        Claude Code package the wrapper launches. The default follows any
+        overlay you already apply.
       '';
     };
 
@@ -53,9 +52,9 @@ in
       default = "claude-routed";
       example = "claude";
       description = ''
-        Command name the wrapper is installed as. Use "claude" to have the
-        routed CLI be the one on PATH — in that case do not also install
-        claude-code itself system-wide, or the two collide over bin/claude.
+        Command the wrapper is installed as. With "claude", drop claude-code
+        from environment.systemPackages: two `claude` binaries would compete
+        on PATH.
       '';
     };
 
@@ -86,9 +85,9 @@ in
       type = lib.types.int;
       default = 300;
       description = ''
-        Seconds without a request before the daemon exits, leaving the socket
-        to start it again on the next connection. A streaming turn counts as
-        activity for its whole duration. 0 keeps it resident.
+        Seconds without a request before the daemon exits; the socket starts
+        it again. A streaming turn counts as activity throughout. 0 keeps it
+        resident.
       '';
     };
 
@@ -96,15 +95,12 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Serve each connecting user from their own
-        `~/.config/claude-router/config.toml` and their own credentials in
-        `~/.local/state/claude-router`, resolved from the uid the kernel
-        reports for the connection. Nothing that belongs to a person is then
-        configured machine-wide, and users manage their own providers with
-        the same TUI and `login` command as a single-user install.
+        Serve each connecting user from their own config and credentials in
+        their home, resolved from the uid the kernel reports. Nothing personal
+        is then configured machine-wide.
 
-        Machine-level keys from `apiKeyFile` still apply to everyone: a
-        systemd credential outranks a user's own stored key for that provider.
+        A provider's `apiKeyFile` still applies to everyone: systemd
+        credentials outrank a user's own key.
       '';
     };
 
@@ -113,9 +109,8 @@ in
       default = [ ];
       example = [ 1000 ];
       description = ''
-        Uids allowed to connect. Empty means any local user may, as with any
-        loopback port. The daemon runs as a DynamicUser here, so its own uid
-        is not a useful default — list the humans who should reach it.
+        Uids allowed to connect; empty means any local user may. The daemon
+        runs as a DynamicUser, so list the people who should reach it.
       '';
     };
 
@@ -124,11 +119,10 @@ in
       default = null;
       example = "deepseek/pro";
       description = ''
-        Which routed model fills Claude Code's `/model` picker. Claude Code
-        supports exactly one custom entry, so this picks it; the others stay
-        reachable through `--model`, `/model <id>`, and agents. Accepts the
-        alias or the bare provider model ID. Defaults to the first configured
-        model.
+        Which routed model fills Claude Code's single custom `/model` entry;
+        the rest stay reachable by name and through agents. Takes an ID or
+        shorthand, optionally provider-qualified. Defaults to the first
+        configured model.
       '';
     };
 
@@ -141,9 +135,8 @@ in
     providers = lib.mkOption {
       default = { };
       description = ''
-        Second providers, keyed by name. Their models are served to Claude
-        Code as anthropic/<model-id> aliases; model IDs must therefore be
-        unique across providers.
+        Providers to route to, keyed by name. Model IDs and shorthands must
+        be unique across them.
       '';
       type = lib.types.attrsOf (lib.types.submodule {
         options = {

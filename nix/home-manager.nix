@@ -110,9 +110,8 @@ in
       defaultText = lib.literalExpression "pkgs.claude-code";
       example = lib.literalExpression "inputs.claude-code-nix.packages.\${system}.default";
       description = ''
-        Claude Code package the wrapper launches. Defaults to the one in the
-        nixpkgs this module is evaluated with, including any overlay already
-        applied; set it to use a different source.
+        Claude Code package the wrapper launches. The default follows any
+        overlay you already apply.
       '';
     };
 
@@ -121,9 +120,8 @@ in
       default = "claude-routed";
       example = "claude";
       description = ''
-        Command name the wrapper is installed as. Use "claude" to have the
-        routed CLI be the one on PATH — then do not also install claude-code
-        into this profile, or the two collide over bin/claude.
+        Command the wrapper is installed as. With "claude", drop claude-code
+        from this profile: two `claude` binaries would compete on PATH.
       '';
     };
 
@@ -166,8 +164,8 @@ in
       default = 300;
       description = ''
         Seconds without a request before the daemon exits; the socket starts
-        it again on the next connection. A streaming turn counts as activity
-        for its whole duration. 0 keeps it resident.
+        it again. A streaming turn counts as activity throughout. 0 keeps it
+        resident.
       '';
     };
 
@@ -175,9 +173,8 @@ in
       type = lib.types.bool;
       default = true;
       description = ''
-        Accept connections only from the user the daemon runs as. A loopback
-        port is otherwise reachable by every local process, any of which
-        could then spend this user's credentials.
+        Accept connections only from the user the daemon runs as. Otherwise
+        any local process can reach the port, and spend these credentials.
       '';
     };
 
@@ -219,9 +216,9 @@ in
         }
       '';
       description = ''
-        Subagents written to each of `agentDirs`. An agent's frontmatter can
-        name any model, so this is how routed models that did not win the
-        single `/model` slot are still selectable.
+        Subagents written to each of `agentDirs`. Their frontmatter can name
+        any model, which is how models beyond the single `/model` slot stay
+        selectable.
       '';
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
@@ -281,10 +278,9 @@ in
     providers = lib.mkOption {
       default = { };
       description = ''
-        Second providers, keyed by name. Their models are offered to Claude
-        Code as anthropic/<model-id> aliases; model IDs must be unique across
-        providers. Credentials are never written here — set an API key in the
-        router TUI, or run `claude-router login <name>` for OAuth providers.
+        Providers to route to, keyed by name. Model IDs and shorthands must
+        be unique across them. Credentials never go here: use the
+        `claude-router` TUI or `claude-router login <name>`.
       '';
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
