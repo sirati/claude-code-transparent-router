@@ -11,8 +11,9 @@ struct FileConfig {
     listen: Option<SocketAddr>,
     anthropic_upstream: Option<String>,
     credentials_dir: Option<PathBuf>,
+    /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
-    providers: BTreeMap<String, FileProvider>,
+    providers: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +120,16 @@ impl Config {
         let providers: Vec<ProviderConfig> = file
             .providers
             .into_iter()
+            .map(|(name, raw)| {
+                let resolved = crate::presets::resolve(raw)
+                    .map_err(|err| format!("provider '{name}': {err}"))?;
+                let provider: FileProvider = resolved
+                    .try_into()
+                    .map_err(|err| format!("provider '{name}': {err}"))?;
+                Ok((name, provider))
+            })
+            .collect::<Result<Vec<_>, String>>()?
+            .into_iter()
             .map(|(name, p)| ProviderConfig {
                 name,
                 base_url: p.base_url.trim_end_matches('/').to_string(),
@@ -219,6 +230,29 @@ pub mod tests {
             Ok(_) => panic!("duplicate model ids must be rejected"),
         };
         assert!(err.contains("shared-model"), "{err}");
+    }
+
+    #[test]
+    fn preset_fills_provider_defaults_and_yields_to_overrides() {
+        let config = Config::load(Some(fixture("preset.toml"))).unwrap();
+        let custom = config.providers.iter().find(|p| p.name == "custom").unwrap();
+        let deepseek = config.providers.iter().find(|p| p.name == "deepseek").unwrap();
+
+        // Straight from the preset: endpoint, dialect, both models.
+        assert_eq!(deepseek.base_url, "https://api.deepseek.com/anthropic");
+        assert_eq!(deepseek.api, ApiFormat::Anthropic);
+        assert_eq!(deepseek.models.len(), 2);
+        assert!(deepseek.models.iter().any(|m| m.id.ends_with("-pro")));
+        assert!(deepseek.models.iter().any(|m| m.id.ends_with("-flash")));
+        assert_eq!(deepseek.effort.as_ref().unwrap().field, "output_config.effort");
+
+        // User keys win; unmentioned preset keys survive.
+        assert_eq!(custom.base_url, "http://127.0.0.1:9000");
+        assert_eq!(custom.models.len(), 1);
+        assert_eq!(custom.api, ApiFormat::Anthropic);
+        let effort = custom.effort.as_ref().unwrap();
+        assert_eq!(effort.default.as_deref(), Some("max"));
+        assert_eq!(effort.field, "output_config.effort");
     }
 
     #[test]

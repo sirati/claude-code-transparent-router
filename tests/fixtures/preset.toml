@@ -1,0 +1,10 @@
+[providers.deepseek]
+preset = "deepseek"
+
+[providers.custom]
+preset = "deepseek"
+base_url = "http://127.0.0.1:9000"
+models = ["only-model"]
+
+[providers.custom.effort]
+default = "max"

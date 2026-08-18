@@ -55,15 +55,25 @@ pure passthrough.
 listen = "127.0.0.1:8787"                         # optional
 anthropic_upstream = "https://api.anthropic.com"  # optional
 
+[providers.deepseek]
+preset = "deepseek"                         # endpoint, dialect, models, effort
+
 [providers.glm]
 base_url = "https://api.z.ai/api/paas/v4"   # OpenAI-format endpoint -> translated
 models = ["glm-4.7"]
-
-[providers.deepseek]
-base_url = "https://api.deepseek.com/anthropic"  # Anthropic-format endpoint
-api = "anthropic"                                # -> near-passthrough
-models = [{ id = "deepseek-v4-pro", name = "DeepSeek 4 Pro" }]
 ```
+
+### Presets
+
+`preset = "<name>"` fills in a provider's defaults from a TOML file shipped
+in [`presets/`](presets) — endpoint, API dialect, model list, and effort
+mapping. Anything you write alongside it wins, key by key (arrays replace
+rather than merge), so `preset` plus a `base_url` override points the same
+model set at a different host. Credentials never come from a preset.
+
+Available: `deepseek` (Anthropic-format endpoint, both `deepseek-v4-pro` and
+`deepseek-v4-flash`). Adding one is a new file in `presets/` plus a line in
+the registry.
 
 `api` selects the provider's dialect: `"anthropic"` endpoints get
 near-passthrough (only the model ID is rewritten and the credential swapped),

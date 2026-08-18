@@ -8,11 +8,15 @@ let
   configFile = settingsFormat.generate "claude-router.toml" {
     listen = "127.0.0.1:${toString cfg.port}";
     anthropic_upstream = cfg.anthropicUpstream;
-    providers = lib.mapAttrs (_: p: {
-      base_url = p.baseUrl;
-      api = p.api;
-      models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
-    } // lib.optionalAttrs (p.effort != null) { effort = p.effort; }) cfg.providers;
+    providers = lib.mapAttrs (_: p:
+      lib.optionalAttrs (p.preset != null) { preset = p.preset; }
+      // lib.optionalAttrs (p.baseUrl != null) { base_url = p.baseUrl; }
+      // lib.optionalAttrs (p.api != null) { api = p.api; }
+      // lib.optionalAttrs (p.models != [ ]) {
+        models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
+      }
+      // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
+    ) cfg.providers;
   };
 
   providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
@@ -58,15 +62,27 @@ in
       '';
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
+          preset = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "deepseek";
+            description = ''
+              Named preset supplying this provider's defaults (endpoint, API
+              dialect, models, effort mapping). Any option set here overrides
+              the preset.
+            '';
+          };
+
           baseUrl = lib.mkOption {
-            type = lib.types.str;
+            type = lib.types.nullOr lib.types.str;
+            default = null;
             example = "https://api.deepseek.com/anthropic";
-            description = "Provider API base URL.";
+            description = "Provider API base URL. Required unless a preset supplies it.";
           };
 
           api = lib.mkOption {
-            type = lib.types.enum [ "openai" "anthropic" ];
-            default = "openai";
+            type = lib.types.nullOr (lib.types.enum [ "openai" "anthropic" ]);
+            default = null;
             description = ''
               API dialect the provider speaks. "anthropic" endpoints get
               near-passthrough (model rewrite only); "openai" endpoints go

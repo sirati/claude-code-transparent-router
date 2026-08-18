@@ -1,0 +1,15 @@
+# DeepSeek via its Anthropic-compatible endpoint.
+# Verified: this endpoint validates Anthropic's own output_config.effort
+# (low|medium|high|xhigh|ultra|max) and ignores the reasoning.effort /
+# reasoning_effort spellings; DeepSeek collapses medium and xhigh to high.
+# Credential: set it in the router TUI, or DEEPSEEK_API_KEY.
+base_url = "https://api.deepseek.com/anthropic"
+api = "anthropic"
+models = [
+  { id = "deepseek-v4-pro", name = "DeepSeek 4 Pro" },
+  { id = "deepseek-v4-flash", name = "DeepSeek 4 Flash" },
+]
+
+[effort]
+field = "output_config.effort"
+map = { low = "low", medium = "high", high = "high", xhigh = "high", max = "max" }

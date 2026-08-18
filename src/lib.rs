@@ -5,6 +5,7 @@ pub mod credentials;
 pub mod effort;
 pub mod headers;
 pub mod passthrough;
+pub mod presets;
 pub mod providers;
 pub mod route;
 pub mod sse;
