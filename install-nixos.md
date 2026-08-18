@@ -75,7 +75,8 @@ machine may carry more than one Claude Code setup:
 services.claude-router = {
   agentDirs = [ ".claude" ".claudeB" ];
   agents.flash = {
-    model = "anthropic/deepseek-v4-flash";
+    provider = "deepseek";           # the alias is assembled from these two
+    model = "deepseek-v4-flash";
     description = "Cheap, fast helper for mechanical edits.";
     effort = "low";
     tools = [ "Read" "Grep" "Glob" ];

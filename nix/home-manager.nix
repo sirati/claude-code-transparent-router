@@ -38,6 +38,32 @@ let
     routerUrl = "http://127.0.0.1:${toString cfg.port}";
   };
 
+  # Routed models are offered to Claude Code as `anthropic/<id>`; the prefix
+  # is an artefact of the picker's filter, so config states the provider and
+  # the model separately and this puts them together.
+  aliasPrefix = "anthropic/";
+
+  agentModel = agent:
+    if agent.provider == null then agent.model else "${aliasPrefix}${agent.model}";
+
+  # A preset's model list lives in its TOML, so read it back to validate
+  # agents against providers that were configured with nothing but a preset.
+  presetModels =
+    preset:
+    let
+      file = ../presets + "/${preset}.toml";
+      parsed = builtins.fromTOML (builtins.readFile file);
+    in
+    if builtins.pathExists file then
+      map (m: if builtins.isString m then m else m.id) (parsed.models or [ ])
+    else
+      [ ];
+
+  providerModels =
+    p:
+    map (m: if builtins.isString m then m else m.id) p.models
+    ++ lib.optionals (p.preset != null) (presetModels p.preset);
+
   # Claude Code's picker holds exactly one custom entry, but a subagent's
   # frontmatter can name any model — so agents are how the other routed
   # models stay reachable.
@@ -47,7 +73,7 @@ let
       frontmatter = [
         "name: ${name}"
         "description: ${agent.description}"
-        "model: ${agent.model}"
+        "model: ${agentModel agent}"
       ]
       ++ lib.optional (agent.effort != null) "effort: ${agent.effort}"
       ++ lib.optional (agent.tools != null) "tools: ${lib.concatStringsSep ", " agent.tools}";
@@ -177,7 +203,8 @@ in
       example = lib.literalExpression ''
         {
           flash = {
-            model = "anthropic/deepseek-v4-flash";
+            provider = "deepseek";
+            model = "deepseek-v4-flash";
             description = "Cheap, fast helper for mechanical edits.";
             effort = "low";
             prompt = "You make small mechanical changes exactly as asked.";
@@ -191,10 +218,24 @@ in
       '';
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
+          provider = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            example = "deepseek";
+            description = ''
+              Configured provider serving this agent's model. The routing
+              alias is assembled from it, so `model` stays a plain upstream
+              ID. Null means an Anthropic model that passes straight through,
+              and `model` is then used verbatim.
+            '';
+          };
+
           model = lib.mkOption {
             type = lib.types.str;
-            example = "anthropic/deepseek-v4-flash";
-            description = "Model this agent runs on — a routed alias, or an Anthropic model.";
+            example = "deepseek-v4-flash";
+            description = ''
+              Upstream model ID including its version, without the
+              `anthropic/` routing prefix.
+            '';
           };
 
           description = lib.mkOption {
@@ -303,6 +344,36 @@ in
   };
 
   config = lib.mkIf cfg.enable {
+    # A mistyped provider or model would otherwise surface as a failed turn
+    # in the middle of a conversation.
+    assertions = lib.concatLists (
+      lib.mapAttrsToList (
+        name: agent:
+        lib.optionals (agent.provider != null) [
+          {
+            assertion = cfg.providers ? ${agent.provider};
+            message = ''
+              services.claude-router.agents.${name}.provider is "${agent.provider}",
+              which is not a configured provider (have: ${
+                lib.concatStringsSep ", " (lib.attrNames cfg.providers)
+              }).
+            '';
+          }
+          {
+            assertion =
+              !(cfg.providers ? ${agent.provider})
+              || lib.elem agent.model (providerModels cfg.providers.${agent.provider});
+            message = ''
+              services.claude-router.agents.${name}.model is "${agent.model}", which
+              provider "${agent.provider}" does not offer (it has: ${
+                lib.concatStringsSep ", " (providerModels cfg.providers.${agent.provider})
+              }).
+            '';
+          }
+        ]
+      ) cfg.agents
+    );
+
     home.packages = lib.optionals cfg.installWrapper [ wrapper cfg.package ];
 
     home.file = agentFiles;
