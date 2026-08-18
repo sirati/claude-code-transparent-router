@@ -137,6 +137,14 @@ $ claude-router login codex   # the same browser sign-in, from the shell
 
 A request to a provider with no credential fails with an error naming it.
 
+### Signing in from another machine
+
+On a headless box the browser runs elsewhere, so the provider's redirect
+lands on a `localhost` address that does not exist there. Paste that address
+back — into the TUI's sign-in screen, or at the prompt `claude-router login`
+leaves open — and the login finishes. It is checked exactly as the callback
+would be, so a URL from a different attempt is refused.
+
 ## 5. Point Claude Code at the router
 
 Save as `~/.local/bin/claude-routed`, or as `claude` to shadow the plain CLI

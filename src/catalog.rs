@@ -3,12 +3,15 @@ use axum::extract::{Request, State};
 use axum::response::Response;
 use serde_json::{json, Value};
 
-use crate::route::ALIAS_PREFIX;
 use crate::{passthrough, AppState};
 
-/// GET /v1/models: Anthropic's catalog with the second provider's models
-/// spliced in. Claude Code's model picker drops IDs that don't start with
-/// `claude` or `anthropic`, hence the `anthropic/<id>` aliases.
+/// GET /v1/models: Anthropic's catalog with the configured providers' models
+/// spliced in, named `<provider>/<model>`.
+///
+/// Claude Code's gateway discovery drops IDs that do not mention `claude` or
+/// `anthropic`, so these rows reach its picker through
+/// `ANTHROPIC_CUSTOM_MODEL_OPTION` — which does no such filtering — rather
+/// than through discovery.
 pub async fn models(
     State(state): State<AppState>,
     crate::peer::Caller(uid): crate::peer::Caller,
@@ -52,7 +55,7 @@ pub async fn models(
                     .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
                 data.push(json!({
                     "type": "model",
-                    "id": format!("{ALIAS_PREFIX}{}", model.id),
+                    "id": format!("{}/{}", provider.name, model.id),
                     "display_name": display_name,
                     "created_at": "2026-01-01T00:00:00Z",
                 }));

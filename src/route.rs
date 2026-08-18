@@ -2,13 +2,6 @@ use serde::Deserialize;
 
 use crate::config::Config;
 
-/// Claude Code's gateway discovery drops models whose ID does not mention
-/// `claude` or `anthropic`, so `/v1/models` advertises this prefix. Nothing
-/// else needs it: `--model`, `/model <id>`, agent frontmatter and the custom
-/// picker entry all take an ID verbatim, which is why the friendlier
-/// `<provider>/<model>` and bare shorthands work everywhere too.
-pub const ALIAS_PREFIX: &str = "anthropic/";
-
 pub enum Backend {
     Anthropic,
     Provider { provider: usize, real_model: String },
@@ -32,22 +25,14 @@ pub fn route(config: &Config, body: &[u8]) -> Backend {
     resolve(config, &model)
 }
 
-/// Accepted spellings, in order:
+/// Accepted spellings:
 ///
-/// - `anthropic/<model>` — what `/v1/models` advertises
 /// - `<provider>/<model>` — e.g. `deepseek/v4-pro`
 /// - `<model>` — a bare ID or shorthand, e.g. `sol`
 ///
-/// In every form `<model>` may be the upstream ID or one of its shorthands.
+/// In both forms `<model>` may be the upstream ID or one of its shorthands.
 /// Anything else is Anthropic's to answer.
 pub fn resolve(config: &Config, model: &str) -> Backend {
-    if let Some(rest) = model.strip_prefix(ALIAS_PREFIX) {
-        return match find(config, None, rest) {
-            Some(backend) => backend,
-            None => Backend::UnknownAlias { model: model.to_string() },
-        };
-    }
-
     if let Some((provider, rest)) = model.split_once('/') {
         return match find(config, Some(provider), rest) {
             Some(backend) => backend,
@@ -101,11 +86,6 @@ mod tests {
     }
 
     #[test]
-    fn accepts_the_discovery_prefix() {
-        assert_eq!(routed("anthropic/beta-model"), Some((1, "beta-model".into())));
-    }
-
-    #[test]
     fn accepts_provider_qualified_names() {
         assert_eq!(routed("beta/beta-model"), Some((1, "beta-model".into())));
         assert_eq!(routed("alpha/alpha-model"), Some((0, "alpha-model".into())));
@@ -116,7 +96,6 @@ mod tests {
         // The fixture gives beta-model the shorthand "beta-pro".
         assert_eq!(routed("beta-pro"), Some((1, "beta-model".into())));
         assert_eq!(routed("beta/beta-pro"), Some((1, "beta-model".into())));
-        assert_eq!(routed("anthropic/beta-pro"), Some((1, "beta-model".into())));
     }
 
     #[test]
@@ -129,15 +108,15 @@ mod tests {
         let config = config();
         assert!(matches!(resolve(&config, "claude-sonnet-5"), Backend::Anthropic));
         assert!(matches!(resolve(&config, "claude-opus-4-5"), Backend::Anthropic));
-        // A slashed ID whose prefix is not one of ours belongs upstream.
+        // A slashed ID whose prefix is not one of ours belongs upstream —
+        // including the `anthropic/` spelling this router used to accept.
         assert!(matches!(resolve(&config, "bedrock/anthropic.claude-v2"), Backend::Anthropic));
+        assert!(matches!(resolve(&config, "anthropic/beta-model"), Backend::Anthropic));
     }
 
     #[test]
     fn mistakes_in_our_own_namespaces_are_reported() {
-        let config = config();
-        assert!(matches!(resolve(&config, "anthropic/nope"), Backend::UnknownAlias { .. }));
-        assert!(matches!(resolve(&config, "beta/nope"), Backend::UnknownAlias { .. }));
+        assert!(matches!(resolve(&config(), "beta/nope"), Backend::UnknownAlias { .. }));
     }
 
     #[test]

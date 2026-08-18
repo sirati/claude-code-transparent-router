@@ -97,6 +97,28 @@ pub async fn refresh(
     })
 }
 
+/// Hand a finished login to the running daemon, which owns the store its
+/// requests read from. Async on purpose: the blocking client panics when it
+/// is used from inside a runtime, and every caller here has one.
+pub async fn hand_to_daemon(
+    client: &reqwest::Client,
+    daemon_base: &str,
+    provider: &str,
+    tokens: &Tokens,
+) -> Result<(), String> {
+    let response = client
+        .put(format!("{daemon_base}/__router/oauth/{provider}"))
+        .json(tokens)
+        .send()
+        .await
+        .map_err(|err| format!("daemon not reachable: {err}"))?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+    let status = response.status();
+    Err(response.text().await.unwrap_or_else(|_| status.to_string()))
+}
+
 /// Read the configured account-identifier claim out of an id_token. The claim
 /// path is dotted, but claim *names* are often URIs containing dots, so the
 /// longest matching literal key is tried at each step before splitting.

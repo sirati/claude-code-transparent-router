@@ -238,11 +238,24 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
             return 1;
         }
     };
-    println!("Opening your browser to sign in to '{provider_name}'.");
-    println!("If it does not open, visit:\n\n{}\n", started.authorize_url);
+    println!("Sign in to '{provider_name}' at:\n");
+    println!("{}\n", started.authorize_url);
+    println!(
+        "Signing in on another machine? The browser will land on a\n\
+         localhost address that does not exist there — paste it here:"
+    );
     claude_code_transparent_router::oauth::login::open_browser(&started.authorize_url);
 
-    let session = match started.complete(&client, oauth_config).await {
+    // Whichever arrives first: this machine's own callback, or a redirect URL
+    // pasted from the machine that actually has the browser.
+    let session = tokio::select! {
+        result = started.complete(&client, oauth_config) => result,
+        pasted = read_line() => match pasted {
+            Some(url) => started.complete_from_url(&client, oauth_config, &url).await,
+            None => Err("no redirect URL given".to_string()),
+        },
+    };
+    let session = match session {
         Ok(session) => session,
         Err(err) => {
             eprintln!("login failed: {err}");
@@ -254,8 +267,15 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
     // as a different user with its own state directory, and would never see a
     // file written here. Falling back to the local store covers the case
     // where the daemon is not up yet.
-    let daemon = claude_code_transparent_router::tui::client::Client::new(config.listen);
-    match daemon.set_tokens(provider_name, &session) {
+    let daemon_base = format!("http://{}", config.listen);
+    match claude_code_transparent_router::oauth::hand_to_daemon(
+        &client,
+        &daemon_base,
+        provider_name,
+        &session,
+    )
+    .await
+    {
         Ok(()) => {
             println!("Signed in to '{provider_name}' ({}).", session.preview());
             0
@@ -277,6 +297,19 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
             }
         },
     }
+}
+
+/// One line from the terminal, off the runtime thread so the callback server
+/// keeps accepting while the user pastes.
+async fn read_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        Some(line.trim().to_string()).filter(|line| !line.is_empty())
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 async fn shutdown_signal() {

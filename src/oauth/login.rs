@@ -77,7 +77,7 @@ pub fn open_browser(url: &str) {
 impl Started {
     /// Wait for the redirect, verify state, and exchange the code.
     pub async fn complete(
-        self,
+        &self,
         client: &reqwest::Client,
         config: &OauthConfig,
     ) -> Result<Tokens, String> {
@@ -85,6 +85,24 @@ impl Started {
             .await
             .map_err(|_| "timed out waiting for the browser redirect".to_string())??;
         exchange(client, config, &code, &self.redirect_uri, &self.verifier).await
+    }
+
+    /// Finish from a redirect URL pasted by hand. On a headless machine the
+    /// browser runs elsewhere, so its `http://localhost:<port>/...` redirect
+    /// lands on the wrong host; pasting that URL back here carries the same
+    /// code and state the callback would have delivered.
+    pub async fn complete_from_url(
+        &self,
+        client: &reqwest::Client,
+        config: &OauthConfig,
+        pasted: &str,
+    ) -> Result<Tokens, String> {
+        let code = self.code_from_url(pasted)?;
+        exchange(client, config, &code, &self.redirect_uri, &self.verifier).await
+    }
+
+    fn code_from_url(&self, pasted: &str) -> Result<String, String> {
+        code_from_url(pasted, &self.state)
     }
 
     async fn wait_for_code(&self) -> Result<String, String> {
@@ -135,6 +153,31 @@ impl Started {
         respond(&mut stream, "Signed in. You can close this tab and return to the terminal.").await;
         Ok(Some(code.clone()))
     }
+}
+
+/// Pull the code out of a pasted redirect. Accepts the whole URL or just its
+/// query string, and checks the state exactly as the callback route does —
+/// pasting is another way in, not a weaker one.
+fn code_from_url(pasted: &str, expected_state: &str) -> Result<String, String> {
+    let pasted = pasted.trim();
+    let query = match Url::parse(pasted) {
+        Ok(url) => url.query().unwrap_or_default().to_string(),
+        Err(_) => pasted.trim_start_matches('?').to_string(),
+    };
+    let params: std::collections::HashMap<_, _> =
+        url::form_urlencoded::parse(query.as_bytes()).into_owned().collect();
+
+    if let Some(error) = params.get("error") {
+        let detail = params.get("error_description").map(String::as_str).unwrap_or(error);
+        return Err(format!("authorization denied: {detail}"));
+    }
+    let code = params
+        .get("code")
+        .ok_or("that address has no `code` parameter; paste the one the browser was sent to")?;
+    if params.get("state").map(String::as_str) != Some(expected_state) {
+        return Err("that address is from a different login attempt (state mismatch)".into());
+    }
+    Ok(code.clone())
 }
 
 async fn respond(stream: &mut BufReader<tokio::net::TcpStream>, message: &str) {
@@ -191,4 +234,43 @@ async fn exchange(
         access_token,
         refresh_token,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STATE: &str = "state-abc";
+
+    #[test]
+    fn takes_a_pasted_redirect_url() {
+        let url = format!("http://localhost:1455/auth/callback?code=abc123&state={STATE}");
+        assert_eq!(code_from_url(&url, STATE).unwrap(), "abc123");
+    }
+
+    #[test]
+    fn takes_just_the_query_string() {
+        assert_eq!(code_from_url(&format!("?code=abc&state={STATE}"), STATE).unwrap(), "abc");
+        assert_eq!(code_from_url(&format!("code=abc&state={STATE}"), STATE).unwrap(), "abc");
+    }
+
+    #[test]
+    fn decodes_escaped_parameters() {
+        let url = format!("http://localhost:1455/auth/callback?code=a%2Fb%2Bc&state={STATE}");
+        assert_eq!(code_from_url(&url, STATE).unwrap(), "a/b+c");
+    }
+
+    /// Pasting is another way in, not a weaker one.
+    #[test]
+    fn a_pasted_url_is_checked_as_strictly_as_the_callback() {
+        let wrong = "http://localhost:1455/auth/callback?code=abc&state=someone-else";
+        assert!(code_from_url(wrong, STATE).unwrap_err().contains("different login"));
+
+        let denied =
+            format!("http://localhost:1455/auth/callback?error=access_denied&state={STATE}");
+        assert!(code_from_url(&denied, STATE).unwrap_err().contains("access_denied"));
+
+        assert!(code_from_url("http://localhost:1455/auth/callback", STATE).is_err());
+        assert!(code_from_url("nonsense", STATE).is_err());
+    }
 }

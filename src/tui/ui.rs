@@ -8,7 +8,17 @@ use crate::credentials::mask;
 
 use super::{App, Mode};
 
-pub fn draw(frame: &mut Frame, app: &App) {
+/// Where to paint a terminal hyperlink after the frame is flushed. Ratatui
+/// has no notion of one, so the anchor is drawn as ordinary text and then
+/// overwritten with the OSC 8 escape at the same position.
+pub struct Hyperlink {
+    pub x: u16,
+    pub y: u16,
+    pub url: String,
+    pub text: String,
+}
+
+pub fn draw(frame: &mut Frame, app: &App) -> Option<Hyperlink> {
     let [header, table, footer] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(3), Constraint::Length(2)])
             .areas(frame.area());
@@ -18,31 +28,88 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_footer(frame, app, footer);
 
     match &app.mode {
-        Mode::Entering { input } => draw_input_popup(frame, app, input),
-        Mode::LoggingIn { provider, url } => draw_login_popup(frame, provider, url),
-        _ => {}
+        Mode::Entering { input } => {
+            draw_input_popup(frame, app, input);
+            None
+        }
+        Mode::LoggingIn { provider, url, pasted } => {
+            Some(draw_login(frame, provider, url, pasted))
+        }
+        _ => None,
     }
 }
 
-/// The browser is already open; the URL is here for when it is not, and for
-/// signing in from a machine without one.
-fn draw_login_popup(frame: &mut Frame, provider: &str, url: &str) {
-    let area = centered(frame.area(), frame.area().width.saturating_sub(8).min(100), 9);
-    let text = vec![
-        Line::from("Waiting for the browser to finish signing in..."),
-        Line::from(""),
-        Line::from(Span::styled("If it did not open, visit:", Style::default().fg(Color::DarkGray))),
-        Line::from(Span::styled(url.to_string(), Style::default().fg(Color::Cyan))),
-        Line::from(""),
-        Line::from(Span::styled("Esc to cancel", Style::default().fg(Color::DarkGray))),
-    ];
+/// Drawn without a border: an OAuth URL is far too long for one row, and box
+/// edges would land in the middle of every wrapped line, so selecting it with
+/// the mouse would pick up the border characters too.
+fn draw_login(frame: &mut Frame, provider: &str, url: &str, pasted: &str) -> Hyperlink {
+    let area = frame.area();
     frame.render_widget(Clear, area);
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let anchor = "Open the sign-in page";
+    let head = vec![
+        Line::from(Span::styled(
+            format!("Sign in to '{provider}'"),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        // Overwritten with the clickable version once the frame is flushed.
+        Line::from(Span::styled(anchor, Style::default().fg(Color::Cyan))),
+        Line::from(""),
+        Line::from(Span::styled("or copy this address:", dim)),
+        Line::from(""),
+    ];
+    let head_height = head.len() as u16;
+    frame.render_widget(Paragraph::new(head), area);
+
+    // The URL gets the full width so a wrapped copy stays intact.
+    let url_area = Rect { y: area.y + head_height, height: url_rows(url, area.width), ..area };
     frame.render_widget(
-        Paragraph::new(text)
-            .wrap(ratatui::widgets::Wrap { trim: false })
-            .block(Block::default().borders(Borders::ALL).title(format!(" sign in to '{provider}' "))),
-        area,
+        Paragraph::new(url.to_string()).wrap(ratatui::widgets::Wrap { trim: false }),
+        url_area,
     );
+
+    let tail = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Signing in on another machine? It will land on a localhost address",
+            dim,
+        )),
+        Line::from(Span::styled("that does not exist there — paste that address here:", dim)),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("> ", dim),
+            Span::raw(tail_of(pasted, area.width.saturating_sub(2))),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled("Enter to finish   Esc to cancel", dim)),
+    ];
+    let tail_area =
+        Rect { y: url_area.y + url_area.height, height: tail.len() as u16, ..area };
+    frame.render_widget(Paragraph::new(tail), tail_area);
+
+    Hyperlink {
+        x: area.x,
+        y: area.y + 2,
+        url: url.to_string(),
+        text: anchor.to_string(),
+    }
+}
+
+fn url_rows(url: &str, width: u16) -> u16 {
+    let width = width.max(1) as usize;
+    url.chars().count().div_ceil(width) as u16
+}
+
+/// Keep the end of a long pasted URL visible, the way a text field would.
+fn tail_of(text: &str, width: u16) -> String {
+    let width = width as usize;
+    let count = text.chars().count();
+    if count <= width {
+        return text.to_string();
+    }
+    text.chars().skip(count - width).collect()
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {

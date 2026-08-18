@@ -68,6 +68,10 @@ $ claude-router      # TUI: [s]et an API key, [l]og in
 $ claude             # Claude Code, routed
 ```
 
+Signing in on a headless machine: the browser runs elsewhere, so the
+provider's redirect lands on a `localhost` address that does not exist there.
+Paste that address back into the sign-in screen and the login finishes.
+
 Remove `claude-code` from `environment.systemPackages` — with `wrapperName =
 "claude"` the two would compete on `PATH`.
 

@@ -19,8 +19,9 @@ pub enum Mode {
     List,
     Entering { input: String },
     ConfirmClear,
-    /// Browser sign-in running; the URL stays on screen as the fallback.
-    LoggingIn { provider: String, url: String },
+    /// Browser sign-in running. The URL stays on screen for a browser
+    /// elsewhere, and `pasted` collects the redirect URL coming back.
+    LoggingIn { provider: String, url: String, pasted: String },
 }
 
 pub struct App {
@@ -33,6 +34,8 @@ pub struct App {
     config: std::sync::Arc<Config>,
     /// Result of a login running on another thread.
     login: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
+    /// Sends a hand-pasted redirect URL to that thread.
+    redirect: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 impl App {
@@ -70,10 +73,11 @@ impl App {
 
         let (tx, rx) = std::sync::mpsc::channel();
         let (url_tx, url_rx) = std::sync::mpsc::channel();
+        let (redirect_tx, redirect_rx) = tokio::sync::mpsc::unbounded_channel();
         let daemon = self.daemon.base_url();
         let provider_name = name.clone();
         std::thread::spawn(move || {
-            let result = run_login(&oauth, &provider_name, &daemon, url_tx);
+            let result = run_login(&oauth, &provider_name, &daemon, url_tx, redirect_rx);
             let _ = tx.send(result);
         });
 
@@ -82,12 +86,13 @@ impl App {
         match url_rx.recv_timeout(Duration::from_secs(5)) {
             Ok(url) => {
                 crate::oauth::login::open_browser(&url);
-                self.mode = Mode::LoggingIn { provider: name, url };
+                self.mode = Mode::LoggingIn { provider: name, url, pasted: String::new() };
                 self.status = None;
             }
             Err(_) => self.mode = Mode::List,
         }
         self.login = Some(rx);
+        self.redirect = Some(redirect_tx);
     }
 
     /// Pick up a finished login without blocking the interface.
@@ -96,6 +101,7 @@ impl App {
         match rx.try_recv() {
             Ok(result) => {
                 self.login = None;
+                self.redirect = None;
                 self.mode = Mode::List;
                 self.status = Some(match result {
                     Ok(message) => message,
@@ -154,12 +160,17 @@ pub fn run(config: std::sync::Arc<Config>) -> io::Result<()> {
         status: None,
         config,
         login: None,
+        redirect: None,
     };
     let mut ticks: u32 = 0;
 
     loop {
         app.poll_login();
-        term.draw(|frame| ui::draw(frame, &app))?;
+        let mut hyperlink = None;
+        term.draw(|frame| hyperlink = ui::draw(frame, &app))?;
+        if let Some(link) = hyperlink {
+            write_hyperlink(&link)?;
+        }
         if !event::poll(Duration::from_millis(200))? {
             // Pick up daemon-side changes (and reconnects) in the background,
             // but never mid-entry: a refresh must not eat pasted input.
@@ -176,14 +187,25 @@ pub fn run(config: std::sync::Arc<Config>) -> io::Result<()> {
             {
                 return Ok(());
             }
-            Event::Paste(text) => {
-                if let Mode::Entering { input } = &mut app.mode {
-                    input.push_str(&text);
-                }
-            }
+            Event::Paste(text) => match &mut app.mode {
+                Mode::Entering { input } => input.push_str(&text),
+                Mode::LoggingIn { pasted, .. } => pasted.push_str(text.trim()),
+                _ => {}
+            },
             _ => {}
         }
     }
+}
+
+/// OSC 8 hyperlink, written straight to the terminal because ratatui's cell
+/// buffer has no way to carry one. Terminals that understand it make the
+/// anchor clickable; the rest simply show the text.
+fn write_hyperlink(link: &ui::Hyperlink) -> io::Result<()> {
+    use std::io::Write;
+    let mut out = io::stdout();
+    ratatui::crossterm::queue!(out, ratatui::crossterm::cursor::MoveTo(link.x, link.y))?;
+    write!(out, "\x1b]8;;{}\x1b\\{}\x1b]8;;\x1b\\", link.url, link.text)?;
+    out.flush()
 }
 
 fn run_login(
@@ -191,6 +213,7 @@ fn run_login(
     provider: &str,
     daemon: &str,
     url_tx: std::sync::mpsc::Sender<String>,
+    mut redirect_rx: tokio::sync::mpsc::UnboundedReceiver<String>,
 ) -> Result<String, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -203,10 +226,18 @@ fn run_login(
             .connect_timeout(Duration::from_secs(10))
             .build()
             .map_err(|err| format!("could not build an HTTP client: {err}"))?;
-        let session = started.complete(&client, oauth).await?;
+        // Whichever arrives first: this machine's callback, or a redirect URL
+        // pasted from wherever the browser actually is.
+        let session = tokio::select! {
+            result = started.complete(&client, oauth) => result?,
+            pasted = redirect_rx.recv() => match pasted {
+                Some(url) => started.complete_from_url(&client, oauth, &url).await?,
+                None => return Err("login cancelled".to_string()),
+            },
+        };
         // The daemon owns the store its requests read from, so it takes the
         // finished session rather than this process writing a file.
-        Client::new_from_base(daemon).set_tokens(provider, &session)?;
+        crate::oauth::hand_to_daemon(&client, daemon, provider, &session).await?;
         Ok(format!("signed in to '{provider}' ({})", session.preview()))
     })
 }
@@ -244,13 +275,29 @@ fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
             }
             false
         }
-        Mode::LoggingIn { .. } => {
-            // The flow is waiting on a browser redirect; only leaving is
-            // meaningful here, and the login thread ends with it.
-            if code == KeyCode::Esc {
-                app.login = None;
-                app.mode = Mode::List;
-                app.status = Some("login cancelled".into());
+        Mode::LoggingIn { pasted, .. } => {
+            match code {
+                KeyCode::Esc => {
+                    app.login = None;
+                    app.redirect = None;
+                    app.mode = Mode::List;
+                    app.status = Some("login cancelled".into());
+                }
+                KeyCode::Backspace => {
+                    pasted.pop();
+                }
+                // Hand the pasted redirect to the waiting login thread.
+                KeyCode::Enter => {
+                    let url = pasted.trim().to_string();
+                    if url.is_empty() {
+                        app.status = Some("paste the URL the browser was sent to".into());
+                    } else if let Some(tx) = &app.redirect {
+                        let _ = tx.send(url);
+                        app.status = Some("completing sign-in...".into());
+                    }
+                }
+                KeyCode::Char(c) => pasted.push(c),
+                _ => {}
             }
             false
         }
