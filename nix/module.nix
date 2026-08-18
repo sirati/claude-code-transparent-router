@@ -1,6 +1,20 @@
 { config, lib, pkgs, ... }:
 let
   cfg = config.services.claude-router;
+  settingsFormat = pkgs.formats.toml { };
+
+  # The config file is generated from this module and never contains
+  # credentials; those arrive via systemd LoadCredential only.
+  configFile = settingsFormat.generate "claude-router.toml" {
+    listen = "127.0.0.1:${toString cfg.port}";
+    anthropic_upstream = cfg.anthropicUpstream;
+    providers = lib.mapAttrs (_: p: {
+      base_url = p.baseUrl;
+      models = p.models;
+    }) cfg.providers;
+  };
+
+  providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
 in
 {
   options.services.claude-router = {
@@ -28,29 +42,47 @@ in
       description = "Loopback port the router listens on.";
     };
 
-    glm = {
-      apiKeyFile = lib.mkOption {
-        type = lib.types.nullOr lib.types.path;
-        default = null;
-        example = "/run/secrets/glm-api-key";
-        description = ''
-          File containing the second provider's API key, passed to the service
-          via systemd LoadCredential (never the Nix store). Null disables the
-          second-provider path entirely; the router is then pure passthrough.
-        '';
-      };
+    anthropicUpstream = lib.mkOption {
+      type = lib.types.str;
+      default = "https://api.anthropic.com";
+      description = "Upstream requests are forwarded to verbatim.";
+    };
 
-      baseUrl = lib.mkOption {
-        type = lib.types.str;
-        default = "https://api.z.ai/api/paas/v4";
-        description = "OpenAI-compatible base URL of the second provider.";
-      };
+    providers = lib.mkOption {
+      default = { };
+      description = ''
+        Second providers, keyed by name. Their models are served to Claude
+        Code as anthropic/<model-id> aliases; model IDs must therefore be
+        unique across providers.
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          baseUrl = lib.mkOption {
+            type = lib.types.str;
+            example = "https://api.z.ai/api/paas/v4";
+            description = "OpenAI-compatible base URL of the provider.";
+          };
 
-      models = lib.mkOption {
-        type = lib.types.listOf lib.types.str;
-        default = [ "glm-4.7" ];
-        description = "Upstream model IDs served as anthropic/<id> aliases.";
-      };
+          models = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "glm-4.7" ];
+            description = "Upstream model IDs to expose.";
+          };
+
+          apiKeyFile = lib.mkOption {
+            type = lib.types.nullOr lib.types.path;
+            default = null;
+            example = "/run/secrets/glm-api-key";
+            description = ''
+              File containing the provider's API key, passed to the service
+              via systemd LoadCredential (never the Nix store). Null leaves
+              the provider configured but credential-less: requests to it
+              return an error saying so.
+            '';
+          };
+        };
+      });
     };
   };
 
@@ -65,15 +97,11 @@ in
     systemd.services.claude-router = {
       requires = [ "claude-router.socket" ];
       after = [ "network.target" ];
-      environment = {
-        GLM_BASE_URL = cfg.glm.baseUrl;
-        GLM_MODELS = lib.concatStringsSep "," cfg.glm.models;
-      };
       serviceConfig = {
-        ExecStart = lib.getExe cfg.package;
+        ExecStart = "${lib.getExe cfg.package} --headless --config ${configFile}";
         DynamicUser = true;
         LoadCredential =
-          lib.optional (cfg.glm.apiKeyFile != null) "glm:${cfg.glm.apiKeyFile}";
+          lib.mapAttrsToList (name: p: "${name}:${p.apiKeyFile}") providersWithKey;
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         ProtectHome = true;

@@ -1,59 +1,71 @@
 # claude-code-transparent-router
 
-A loopback HTTP router for Claude Code. Requests for Anthropic models are
-forwarded to `api.anthropic.com` **semantically verbatim** — byte-identical
-method, path, headers, and body in both directions. Requests for aliased
-second-provider models (`anthropic/<id>`) are translated between the Anthropic
-Messages API and an OpenAI-compatible provider (GLM by default).
+Loopback HTTP router for Claude Code. Anthropic models pass through to
+`api.anthropic.com` unchanged; models aliased as `anthropic/<id>` are
+translated to OpenAI-compatible providers (GLM, DeepSeek, ...).
 
-There is deliberately **no TLS interception and no transport disguise**: the
-inbound leg is plain HTTP on `127.0.0.1`, the outbound leg is this stack's own
-normal TLS. Fidelity is semantic, not cosmetic — it's your credential, your
-machine, your session.
+## Behavior
 
-## Design invariants
+- Requests to Anthropic are forwarded with the original body bytes and
+  headers; only hop-by-hop headers are stripped, nothing is added.
+- Responses stream through unbuffered, including SSE. No decompression, no
+  retries, no response timeout.
+- Errors originating in the router itself (as opposed to upstream) are 502s
+  marked with `x-proxy-origin: claude-code-transparent-router`.
+- Unknown paths are proxied to Anthropic too; only `/v1/messages`,
+  `/v1/messages/count_tokens`, and `/v1/models` are handled specially.
+- `/v1/models` returns Anthropic's catalog with the configured provider
+  models appended as `anthropic/<id>` (Claude Code's model picker drops IDs
+  that don't start with `claude` or `anthropic`).
+- Provider requests are built from scratch; inbound headers — including the
+  Anthropic credential — never reach a provider.
 
-- **Verbatim passthrough.** The body is buffered, `model` is peeked with a
-  shallow parse, and the *original bytes* are forwarded — never reserialized.
-  Only hop-by-hop headers (`connection`, `keep-alive`, `te`, `trailer`,
-  `transfer-encoding`, `upgrade`, `proxy-authenticate`, `proxy-authorization`)
-  are stripped; multi-valued headers like `anthropic-beta` keep every value in
-  order. Nothing is added — no `via`, no `x-forwarded-for`.
-- **No content negotiation of our own.** reqwest's decompression is disabled,
-  so `content-encoding` always tells the truth about the body it accompanies.
-- **Streaming untouched.** SSE responses flow through chunk-by-chunk with no
-  buffering, no re-framing, no compression layer.
-- **No retries, no timeouts on responses.** Claude Code owns backoff (it reads
-  `retry-after` / `anthropic-ratelimit-*`, which are forwarded verbatim).
-  Proxy-origin failures return 502 with an `x-proxy-origin:
-  claude-code-transparent-router` header so transcripts can tell the two apart.
-- **Credential isolation.** `authorization` / `x-api-key` are never logged,
-  inspected, or persisted, and *cannot* reach the second provider: the
-  provider module's request signatures take body bytes and a model name only,
-  and it builds its outbound headers from scratch.
-- **Catch-all.** Every path that isn't explicitly owned (`/v1/models` merging)
-  is proxied unchanged — telemetry, entitlements, future endpoints.
-
-## Running
+## Usage
 
 ```console
-$ nix run github:sirati/claude-code-transparent-router   # router on 127.0.0.1:8787
+$ nix run github:sirati/claude-code-transparent-router                 # router on 127.0.0.1:8787
 $ nix run github:sirati/claude-code-transparent-router#claude-routed   # Claude Code pointed at it
 ```
 
-Configuration is by environment:
+Run from a terminal, the router opens a TUI listing the configured providers
+and their credential status, with actions to set or clear credentials. Key
+entry is masked: a short prefix stays visible, the rest shows as `****`.
+`--headless` (or no TTY) runs the plain server.
 
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `CLAUDE_ROUTER_LISTEN` | `127.0.0.1:8787` | Loopback bind address |
-| `ANTHROPIC_UPSTREAM_URL` | `https://api.anthropic.com` | Passthrough target |
-| `GLM_API_KEY` | *(unset)* | Second-provider key (dev fallback; prefer `LoadCredential`) |
-| `GLM_BASE_URL` | `https://api.z.ai/api/paas/v4` | OpenAI-compatible base URL |
-| `GLM_MODELS` | `glm-4.7` | Comma-separated IDs, served as `anthropic/<id>` |
+## Configuration
 
-Without a GLM credential the router is pure passthrough. Token counting for
-provider models is a coarse local estimate (`bytes / 4`) — the provider has no
-count endpoint.
+`--config <path>`, `$CLAUDE_ROUTER_CONFIG`, or
+`~/.config/claude-router/config.toml`. Without a config file the router is
+pure passthrough.
+
+```toml
+listen = "127.0.0.1:8787"                         # optional
+anthropic_upstream = "https://api.anthropic.com"  # optional
+
+[providers.glm]
+base_url = "https://api.z.ai/api/paas/v4"
+models = ["glm-4.7"]
+
+[providers.deepseek]
+base_url = "https://api.deepseek.com/v1"
+models = ["deepseek-chat"]
+```
+
+Model IDs must be unique across providers, since aliases don't carry the
+provider name.
+
+Credentials are not part of the config file. They resolve per provider, in
+order:
+
+1. systemd credential `$CREDENTIALS_DIRECTORY/<provider>` (`LoadCredential`)
+2. `~/.local/state/claude-router/credentials/<provider>` (managed by the TUI)
+3. `<PROVIDER>_API_KEY` environment variable
+
+Requests to a provider without a credential fail with an error saying which
+credential is missing and how to set it.
+
+`count_tokens` for provider models returns a local estimate (`bytes / 4`);
+these providers have no count endpoint.
 
 ## NixOS
 
@@ -62,19 +74,24 @@ count endpoint.
   imports = [ claude-code-transparent-router.nixosModules.default ];
   services.claude-router = {
     enable = true;
-    glm.apiKeyFile = "/run/secrets/glm-api-key";  # via systemd LoadCredential
+    providers.glm = {
+      baseUrl = "https://api.z.ai/api/paas/v4";
+      models = [ "glm-4.7" ];
+      apiKeyFile = "/run/secrets/glm-api-key";
+    };
   };
 }
 ```
 
-The unit is socket-activated on `127.0.0.1:8787`, runs as `DynamicUser` under
-a hardened sandbox, and installs the `claude-routed` wrapper system-wide
-(`installClaudeRouted = false` to opt out).
+The module generates the TOML config, wires one `LoadCredential` per
+provider, and socket-activates the service on `127.0.0.1:8787` as
+`DynamicUser` with a hardened sandbox. `claude-routed` is installed
+system-wide unless `installClaudeRouted = false`.
 
 ## Development
 
-`nix develop` provides the toolchain (nightly rust via rust-overlay,
-rust-analyzer, cargo-nextest). `cargo test` runs the unit tests.
+`nix develop` provides the toolchain. `cargo test` runs unit and integration
+tests, including the SSE translation state machine.
 
 ## License
 

@@ -33,6 +33,8 @@ pub async fn send(state: &AppState, parts: Parts, body: Bytes) -> Response {
     };
 
     let status = upstream.status();
+    // Method/path/status only — headers and bodies are never logged.
+    tracing::info!(path = path_and_query, status = %status, "passthrough");
     let response_headers = headers::response_headers(upstream.headers());
 
     let mut response = Response::builder()

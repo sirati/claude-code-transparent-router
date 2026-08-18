@@ -15,17 +15,14 @@ pub async fn models(State(state): State<AppState>, req: Request) -> Response {
         Ok(bytes) => bytes,
         Err(err) => return passthrough::proxy_error(&format!("failed to read request body: {err}")),
     };
-    if state.config.provider.is_some() {
+    if !state.config.providers.is_empty() {
         // Owned route: request an identity body so the catalog can be parsed
-        // and merged. Pure passthrough (provider disabled) stays verbatim.
+        // and merged. Pure passthrough (no providers) stays verbatim.
         parts.headers.remove("accept-encoding");
     }
     let upstream = passthrough::send(&state, parts, bytes).await;
 
-    let Some(provider) = &state.config.provider else {
-        return upstream;
-    };
-    if !upstream.status().is_success() {
+    if state.config.providers.is_empty() || !upstream.status().is_success() {
         return upstream;
     }
 
@@ -42,13 +39,15 @@ pub async fn models(State(state): State<AppState>, req: Request) -> Response {
     // Append to the final page only, so paginated fetches see each entry once.
     let last_page = catalog["has_more"] == json!(false);
     if let (true, Some(data)) = (last_page, catalog["data"].as_array_mut()) {
-        for model in &provider.models {
-            data.push(json!({
-                "type": "model",
-                "id": format!("{ALIAS_PREFIX}{model}"),
-                "display_name": format!("{model} (routed)"),
-                "created_at": "2026-01-01T00:00:00Z",
-            }));
+        for provider in &state.config.providers {
+            for model in &provider.models {
+                data.push(json!({
+                    "type": "model",
+                    "id": format!("{ALIAS_PREFIX}{model}"),
+                    "display_name": format!("{model} (via {})", provider.name),
+                    "created_at": "2026-01-01T00:00:00Z",
+                }));
+            }
         }
     }
 

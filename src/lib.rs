@@ -1,10 +1,12 @@
 pub mod catalog;
 pub mod config;
+pub mod credentials;
 pub mod headers;
 pub mod passthrough;
 pub mod providers;
 pub mod route;
 pub mod sse;
+pub mod tui;
 
 use std::sync::Arc;
 
@@ -22,6 +24,7 @@ const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 pub struct AppState {
     pub client: reqwest::Client,
     pub config: Arc<config::Config>,
+    pub credentials: Arc<credentials::CredentialStore>,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -51,13 +54,12 @@ async fn dispatch(state: AppState, req: Request, counting: bool) -> Response {
 
     match route::route(&state.config, &bytes) {
         route::Backend::Anthropic => passthrough::send(&state, parts, bytes).await,
-        route::Backend::Provider { real_model } => {
-            if counting {
-                providers::glm::count_tokens(&bytes)
-            } else {
-                providers::glm::messages(&state, bytes, real_model).await
-            }
+        route::Backend::Provider { provider, real_model } => {
+            providers::dispatch(&state, provider, bytes, real_model, counting).await
         }
+        route::Backend::UnknownAlias { model } => passthrough::proxy_error(&format!(
+            "no configured provider lists model '{model}'; check the providers section of the router config"
+        )),
     }
 }
 
