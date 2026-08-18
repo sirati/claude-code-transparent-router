@@ -1,0 +1,13 @@
+# A provider with its own compaction protocol, exercising every knob: a
+# dedicated endpoint, a trailing control item, and fields added or dropped
+# only for requests the router recognises as a compaction.
+[providers.gamma]
+base_url = "http://gamma.example/v1"
+models = [{ id = "gamma-model" }]
+request_extra = { store = false, include = ["reasoning.encrypted_content"] }
+
+[providers.gamma.compaction]
+path = "responses/compact"
+trigger_item = "compaction_trigger"
+request_extra = { parallel_tool_calls = true }
+request_remove = ["tool_choice", "store", "stream", "include"]

@@ -1,3 +1,4 @@
+use claude_code_transparent_router::providers::responses;
 use claude_code_transparent_router::providers::responses::{request, response, stream};
 use serde_json::{json, Value};
 
@@ -163,6 +164,78 @@ fn non_streaming_reply_is_assembled_from_the_event_stream() {
 
     // Nothing resembling an event stream: say so rather than invent a reply.
     assert!(response::from_event_stream("not a stream", "codex/sol").is_none());
+}
+
+/// Claude Code puts `system` messages inside the conversation from the second
+/// turn onwards; the ChatGPT backend answers "System messages are not
+/// allowed", so they have to become `developer` messages.
+#[test]
+fn system_messages_become_developer_messages() {
+    let anthropic = json!({
+        "messages": [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+            {"role": "system", "content": "ambient context, not from the user"},
+            {"role": "user", "content": "who are you"},
+        ],
+    });
+    let out = request::to_responses(&anthropic, "gpt-5.6-sol", true);
+    let input = out["input"].as_array().unwrap();
+
+    let roles: Vec<&str> = input.iter().filter_map(|i| i["role"].as_str()).collect();
+    assert_eq!(roles, ["user", "assistant", "developer", "user"]);
+    assert!(!input.iter().any(|i| i["role"] == "system"), "{input:#?}");
+    assert_eq!(input[2]["content"][0]["text"], "ambient context, not from the user");
+}
+
+/// A user message may carry guidance either side of a tool result, and Claude
+/// Code relies on that to keep roles alternating. Emitting the items in source
+/// order keeps every part, in place.
+#[test]
+fn text_around_a_tool_result_survives_in_order() {
+    let anthropic = json!({
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "before"},
+            {"type": "tool_result", "tool_use_id": "toolu_1", "content": "the output"},
+            {"type": "text", "text": "actually, stop and do something else"},
+        ]}],
+    });
+    let out = request::to_responses(&anthropic, "gpt-5.6-sol", true);
+    let input = out["input"].as_array().unwrap();
+
+    assert_eq!(input.len(), 3);
+    assert_eq!(input[0]["content"][0]["text"], "before");
+    assert_eq!(input[1]["type"], "function_call_output");
+    assert_eq!(input[1]["call_id"], "toolu_1");
+    assert_eq!(input[2]["content"][0]["text"], "actually, stop and do something else");
+}
+
+/// A provider may want a compaction sent its own way. The knobs are config,
+/// not code: extras and removals stack on the provider's own, and the trigger
+/// item is appended last so it stays the final input item.
+#[test]
+fn compaction_protocol_reshapes_the_body() {
+    let fixture =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compaction.toml");
+    let config = claude_code_transparent_router::config::Config::load(Some(fixture)).unwrap();
+    let provider = config.providers.iter().find(|p| p.compaction.is_some()).unwrap();
+
+    let anthropic = json!({"messages": [{"role": "user", "content": "summarise"}], "stream": true});
+    let mut ordinary = request::to_responses(&anthropic, "gamma-model", true);
+    responses::shape_body(provider, None, &mut ordinary);
+    assert_eq!(ordinary["store"], json!(false));
+    assert_eq!(ordinary["stream"], json!(true));
+    assert_eq!(ordinary["input"].as_array().unwrap().len(), 1);
+
+    let mut compacting = request::to_responses(&anthropic, "gamma-model", true);
+    responses::shape_body(provider, provider.compaction.as_ref(), &mut compacting);
+    let object = compacting.as_object().unwrap();
+    for dropped in ["tool_choice", "store", "stream", "include"] {
+        assert!(!object.contains_key(dropped), "{dropped} survived: {compacting:#?}");
+    }
+    assert_eq!(compacting["parallel_tool_calls"], json!(true));
+    let input = compacting["input"].as_array().unwrap();
+    assert_eq!(input.last().unwrap(), &json!({"type": "compaction_trigger"}));
 }
 
 #[test]

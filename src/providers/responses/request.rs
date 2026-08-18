@@ -49,11 +49,20 @@ fn system_text(system: &Value) -> Option<String> {
 }
 
 fn convert_message(message: &Value, out: &mut Vec<Value>) {
-    let role = message["role"].as_str().unwrap_or("user");
+    // Claude Code puts `system` messages in the conversation, not only in the
+    // top-level system prompt. The Responses API rejects that role outright
+    // ("System messages are not allowed"), so they become `developer`
+    // messages — the role Codex itself uses for out-of-band instructions on
+    // this backend.
+    let role = match message["role"].as_str().unwrap_or("user") {
+        "assistant" => "assistant",
+        "system" | "developer" => "developer",
+        _ => "user",
+    };
     match &message["content"] {
         Value::String(text) => out.push(text_message(role, text)),
         Value::Array(blocks) if role == "assistant" => convert_assistant(blocks, out),
-        Value::Array(blocks) => convert_user(blocks, out),
+        Value::Array(blocks) => convert_user(role, blocks, out),
         _ => {}
     }
 }
@@ -86,15 +95,32 @@ fn convert_assistant(blocks: &[Value], out: &mut Vec<Value>) {
     }
 }
 
-fn convert_user(blocks: &[Value], out: &mut Vec<Value>) {
-    let mut parts = Vec::new();
+/// Emits items in source order: a message carrying whatever text and images
+/// preceded each tool result, then that result. Claude Code pairs a tool
+/// result with follow-up guidance in one message to keep roles alternating,
+/// so collapsing or dropping those siblings loses instructions.
+fn convert_user(role: &str, blocks: &[Value], out: &mut Vec<Value>) {
+    let mut parts: Vec<Value> = Vec::new();
+    let flush = |parts: &mut Vec<Value>, out: &mut Vec<Value>| {
+        if !parts.is_empty() {
+            out.push(json!({
+                "type": "message",
+                "role": role,
+                "content": std::mem::take(parts),
+            }));
+        }
+    };
+
     for block in blocks {
         match block["type"].as_str() {
-            Some("tool_result") => out.push(json!({
-                "type": "function_call_output",
-                "call_id": block["tool_use_id"],
-                "output": tool_result_text(block),
-            })),
+            Some("tool_result") => {
+                flush(&mut parts, out);
+                out.push(json!({
+                    "type": "function_call_output",
+                    "call_id": block["tool_use_id"],
+                    "output": tool_result_text(block),
+                }));
+            }
             Some("text") => parts.push(json!({"type": "input_text", "text": block["text"]})),
             Some("image") => {
                 if let Some(part) = image_part(&block["source"]) {
@@ -104,9 +130,7 @@ fn convert_user(blocks: &[Value], out: &mut Vec<Value>) {
             _ => {}
         }
     }
-    if !parts.is_empty() {
-        out.push(json!({"type": "message", "role": "user", "content": parts}));
-    }
+    flush(&mut parts, out);
 }
 
 fn tool_result_text(block: &Value) -> String {

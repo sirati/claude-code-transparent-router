@@ -80,6 +80,20 @@ models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
 Name a model as `sol`, `codex/sol`, or `gpt-5.6-sol`; names must be unique
 across providers.
 
+## Compaction
+
+`/compact` reaches the router as an ordinary request whose last user message
+carries Claude Code's summarisation instruction, so the router recognises it
+and providers that compact their own way can be told to:
+
+| Key | Effect |
+| --- | --- |
+| `compact_patterns` | Extra wordings that mark a compaction, for phrasings a release changes |
+| `[providers.X.compaction]` | `path`, `trigger_item`, `request_extra`, `request_remove`, applied only to a compaction |
+
+Sending `OVERRIDE_SHOULD_COMPACT` on its own accepts the next request whatever
+it looks like.
+
 ## Development
 
 `nix develop` for the toolchain, `cargo test` for the suite.

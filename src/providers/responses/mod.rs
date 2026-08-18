@@ -11,8 +11,43 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde_json::Value;
 
-use crate::config::ProviderConfig;
+use crate::config::{CompactionConfig, ProviderConfig};
 use crate::providers::{json_response, provider_error, ProviderAuth};
+
+/// Applies the provider's body knobs, then the compaction protocol's own on
+/// top: extras merged, removals applied, and the trigger item appended last so
+/// it stays the final input item.
+pub fn shape_body(
+    provider: &ProviderConfig,
+    compaction: Option<&CompactionConfig>,
+    outgoing: &mut Value,
+) {
+    let extra = provider
+        .request_extra
+        .iter()
+        .chain(compaction.iter().flat_map(|c| c.request_extra.iter()));
+    for (key, value) in extra {
+        if let Ok(value) = serde_json::to_value(value) {
+            outgoing[key.as_str()] = value;
+        }
+    }
+    if let Some(object) = outgoing.as_object_mut() {
+        let remove = provider
+            .request_remove
+            .iter()
+            .chain(compaction.iter().flat_map(|c| c.request_remove.iter()));
+        for key in remove {
+            object.remove(key);
+        }
+    }
+    // Codex marks a compaction with a trailing control item rather than a
+    // prompt: the instruction itself lives on the server.
+    if let Some(item) = compaction.and_then(|c| c.trigger_item.as_deref()) {
+        if let Some(input) = outgoing["input"].as_array_mut() {
+            input.push(serde_json::json!({"type": item}));
+        }
+    }
+}
 
 pub async fn messages(
     client: &reqwest::Client,
@@ -20,6 +55,7 @@ pub async fn messages(
     auth: ProviderAuth,
     body: Bytes,
     real_model: String,
+    compaction: bool,
 ) -> Response {
     let anthropic_req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -32,18 +68,16 @@ pub async fn messages(
     // The CLI gets back the alias it asked for, never the provider's own ID.
     let alias = anthropic_req["model"].as_str().unwrap_or(&real_model).to_string();
     let streaming = anthropic_req["stream"].as_bool().unwrap_or(false);
+    // A provider's own compaction protocol only applies to a request the
+    // router recognised as one; otherwise a compaction is an ordinary turn
+    // carrying Claude Code's summarisation instruction as its last message.
+    let compaction = compaction.then_some(provider.compaction.as_ref()).flatten();
+    if compaction.is_some() {
+        tracing::info!(provider = provider.name, "compacting via the provider's own protocol");
+    }
+
     let mut outgoing = request::to_responses(&anthropic_req, &real_model, streaming);
-    // Provider-specific body knobs come from config, not from this module.
-    for (key, value) in &provider.request_extra {
-        if let Ok(value) = serde_json::to_value(value) {
-            outgoing[key.as_str()] = value;
-        }
-    }
-    if let Some(object) = outgoing.as_object_mut() {
-        for key in &provider.request_remove {
-            object.remove(key);
-        }
-    }
+    shape_body(provider, compaction, &mut outgoing);
     if let Some(level) =
         crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut outgoing)
     {
@@ -56,8 +90,11 @@ pub async fn messages(
 
     // Fresh header map from the auth material only: nothing inbound, so the
     // Anthropic credential cannot reach this provider.
+    let path = compaction
+        .and_then(|c| c.path.as_deref())
+        .unwrap_or("responses");
     let sent = client
-        .post(format!("{}/responses", provider.base_url))
+        .post(format!("{}/{path}", provider.base_url))
         .headers(auth.into_headers())
         .header("content-type", "application/json")
         .header("accept", if upstream_streams { "text/event-stream" } else { "application/json" })

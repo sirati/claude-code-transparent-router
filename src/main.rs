@@ -166,7 +166,13 @@ async fn serve(config: Arc<config::Config>, args: Args) {
         tracing::info!("serving each user from their own config");
         Arc::new(claude_code_transparent_router::user_config::UserConfigs::new(config.clone()))
     });
-    let state = AppState { client, config: config.clone(), user_configs, listen: bound };
+    let state = AppState {
+        client,
+        config: config.clone(),
+        user_configs,
+        listen: bound,
+        compact_override: Default::default(),
+    };
 
     let idle_timeout = args
         .idle_timeout

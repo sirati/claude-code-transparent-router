@@ -33,6 +33,11 @@ struct FileConfig {
     /// activation. Absent or zero keeps the daemon resident.
     #[serde(default)]
     idle_timeout_secs: Option<u64>,
+    /// Extra wordings that mark a compaction request, added to the ones the
+    /// router already knows. Claude Code's phrasing changes between
+    /// releases, so this is how a new one is taught without a rebuild.
+    #[serde(default)]
+    compact_patterns: Vec<String>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -60,6 +65,36 @@ struct FileProvider {
     /// reject something the translation would otherwise send.
     #[serde(default)]
     request_remove: Vec<String>,
+    /// How this provider wants a compaction request, when it wants one
+    /// differently from an ordinary turn.
+    #[serde(default)]
+    compaction: Option<CompactionConfig>,
+}
+
+/// A provider's own compaction protocol, applied only to requests recognised
+/// as Claude Code compacting the conversation.
+///
+/// Codex offers two on this backend: a `responses/compact` endpoint, and a
+/// normal turn carrying a trailing `{"type": "compaction_trigger"}` item —
+/// with the summarisation prompt held server-side. Both answer with an
+/// `encrypted_content` compaction item rather than readable text, which
+/// Claude Code cannot use as its summary, so neither is on by default.
+#[derive(Deserialize, Debug, Default)]
+pub struct CompactionConfig {
+    /// Endpoint path for compaction, relative to the provider's base URL.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Append `{"type": "<this>"}` as the final input item.
+    #[serde(default)]
+    pub trigger_item: Option<String>,
+    /// Fields merged into the compaction request body.
+    #[serde(default)]
+    pub request_extra: BTreeMap<String, toml::Value>,
+    /// Fields dropped from the compaction request body. Codex omits
+    /// tool_choice, store, stream, include and client_metadata on its
+    /// dedicated endpoint.
+    #[serde(default)]
+    pub request_remove: Vec<String>,
 }
 
 /// A provider whose credential is an OAuth token rather than an API key.
@@ -178,6 +213,8 @@ pub struct Config {
     pub user_config: bool,
     /// Idle seconds before the daemon exits; None or zero means stay.
     pub idle_timeout_secs: Option<u64>,
+    /// Extra wordings that mark a compaction request.
+    pub compact_patterns: Vec<String>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -195,6 +232,8 @@ pub struct ProviderConfig {
     pub headers: BTreeMap<String, String>,
     pub request_extra: BTreeMap<String, toml::Value>,
     pub request_remove: Vec<String>,
+    /// Set when this provider has its own compaction protocol.
+    pub compaction: Option<CompactionConfig>,
 }
 
 pub struct Model {
@@ -272,6 +311,7 @@ impl Config {
                 headers: p.headers,
                 request_extra: p.request_extra,
                 request_remove: p.request_remove,
+                compaction: p.compaction,
                 models: p
                     .models
                     .into_iter()
@@ -320,6 +360,7 @@ impl Config {
             },
             user_config: file.user_config,
             idle_timeout_secs: file.idle_timeout_secs,
+            compact_patterns: file.compact_patterns,
             picker_model: file.picker_model,
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
@@ -390,6 +431,8 @@ pub mod tests {
         assert_eq!(beta.models[0].display_name.as_deref(), Some("Beta Model Pro"));
         assert_eq!(config.provider_for_model("beta-model"), Some(1));
         assert_eq!(config.provider_for_model("unlisted"), None);
+        // A compaction section is optional, and absent unless written.
+        assert!(alpha.compaction.is_none());
     }
 
     #[test]

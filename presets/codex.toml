@@ -60,3 +60,17 @@ parallel_tool_calls = true
 [effort]
 field = "reasoning.effort"
 remove = ["output_config"]
+
+# Codex compacts server-side: either POST responses/compact, or an ordinary
+# turn whose last input item is {"type": "compaction_trigger"}. Both hold the
+# summarisation prompt on the server and answer with a compaction item whose
+# `encrypted_content` only Codex can read back -- Claude Code needs the summary
+# as text, so neither is enabled here. A compaction reaches this provider as an
+# ordinary turn carrying Claude Code's own summarisation instruction, which the
+# model answers in text. To send it Codex's way regardless:
+#
+# [compaction]
+# path = "responses/compact"
+# trigger_item = "compaction_trigger"
+# request_extra = { parallel_tool_calls = true }
+# request_remove = ["tool_choice", "store", "stream", "include"]

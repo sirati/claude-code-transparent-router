@@ -51,15 +51,26 @@ impl ProviderAuth {
     }
 }
 
+/// What this particular call needs to know beyond the request body.
+#[derive(Clone, Copy, Default)]
+pub struct Call {
+    /// A token-count request rather than a turn.
+    pub counting: bool,
+    /// Whose credentials to use; the kernel's answer for the connection.
+    pub uid: Option<u32>,
+    /// Claude Code is compacting the conversation.
+    pub compaction: bool,
+}
+
 pub async fn dispatch(
     state: &AppState,
     config: &crate::config::Config,
     provider: usize,
     body: Bytes,
     real_model: String,
-    counting: bool,
-    uid: Option<u32>,
+    call: Call,
 ) -> Response {
+    let (counting, uid, compaction) = (call.counting, call.uid, call.compaction);
     let provider = &config.providers[provider];
     if counting {
         return count_tokens(&body);
@@ -71,7 +82,7 @@ pub async fn dispatch(
     // material only.
     if provider.oauth.is_some() {
         return match oauth_auth(state, provider, uid).await {
-            Ok(auth) => forward(state, provider, auth, body, real_model).await,
+            Ok(auth) => forward(state, provider, auth, body, real_model, compaction).await,
             Err(err) => proxy_error(&err),
         };
     }
@@ -93,7 +104,8 @@ pub async fn dispatch(
             anthropic_compat::messages(&state.client, provider, key, body, real_model).await
         }
         ApiFormat::Responses => {
-            forward(state, provider, ProviderAuth::bearer(&key), body, real_model).await
+            forward(state, provider, ProviderAuth::bearer(&key), body, real_model, compaction)
+                .await
         }
     }
 }
@@ -104,6 +116,7 @@ async fn forward(
     auth: ProviderAuth,
     body: Bytes,
     real_model: String,
+    compaction: bool,
 ) -> Response {
     let auth = provider
         .headers
@@ -111,7 +124,7 @@ async fn forward(
         .fold(auth, |auth, (name, value)| auth.with(name, value.clone()));
     match provider.api {
         ApiFormat::Responses => {
-            responses::messages(&state.client, provider, auth, body, real_model).await
+            responses::messages(&state.client, provider, auth, body, real_model, compaction).await
         }
         // OAuth against the other dialects is not wired up; no configured
         // provider needs it yet, and guessing the header shape would be worse

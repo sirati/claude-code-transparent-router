@@ -86,6 +86,27 @@ pub fn message_stop() -> String {
     frame("message_stop", &json!({"type": "message_stop"}))
 }
 
+/// A whole streamed message in one response, for replies the router itself
+/// produces: the frame sequence is the same one a provider would send.
+pub fn single_message_response(model: &str, text: &str) -> axum::response::Response {
+    let body = format!(
+        "{}{}{}{}{}{}",
+        message_start("msg_router", model),
+        content_block_start(0, text_block()),
+        text_delta(0, text),
+        content_block_stop(0),
+        message_delta("end_turn", 0, 0),
+        message_stop(),
+    );
+    axum::response::Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .header(crate::passthrough::PROXY_ORIGIN_HEADER, crate::passthrough::PROXY_ORIGIN_VALUE)
+        .body(axum::body::Body::from(body))
+        .expect("router message response")
+}
+
 pub fn error(message: &str) -> String {
     frame(
         "error",

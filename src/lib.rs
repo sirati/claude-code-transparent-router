@@ -1,5 +1,6 @@
 pub mod admin;
 pub mod catalog;
+pub mod compact;
 pub mod config;
 pub mod credentials;
 pub mod effort;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub user_configs: Option<Arc<user_config::UserConfigs>>,
     /// The daemon's actual bound address, reported to the TUI client.
     pub listen: std::net::SocketAddr,
+    /// One-shot bypass armed by the override phrase.
+    pub compact_override: compact::Override,
 }
 
 impl AppState {
@@ -121,11 +124,31 @@ async fn dispatch(state: AppState, req: Request, counting: bool, uid: Option<u32
     };
 
     let config = state.config_for(uid);
+
+    // Two control cases, both decided from the last user message. Neither is
+    // forwarded anywhere: the override arms a bypass and answers in-band, and
+    // knowing a request is a compaction changes how a provider is asked.
+    let parsed: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
+    if let Some(parsed) = &parsed {
+        if compact::is_override(parsed) {
+            state.compact_override.arm();
+            tracing::info!("compaction override armed for the next request");
+            return compact::armed_reply(parsed);
+        }
+    }
+    let compaction = parsed.as_ref().is_some_and(|parsed| {
+        compact::is_compaction(parsed, &config.compact_patterns)
+            || state.compact_override.take()
+    });
+    if compaction {
+        tracing::info!("compacting");
+    }
+
     match route::route(&config, &bytes) {
         route::Backend::Anthropic => passthrough::send(&state, &config, parts, bytes).await,
         route::Backend::Provider { provider, real_model } => {
-            providers::dispatch(&state, &config, provider, bytes, real_model, counting, uid)
-                .await
+            let call = providers::Call { counting, uid, compaction };
+            providers::dispatch(&state, &config, provider, bytes, real_model, call).await
         }
         route::Backend::UnknownAlias { model } => passthrough::proxy_error(&format!(
             "no configured provider lists model '{model}'; check the providers section of the router config"

@@ -22,6 +22,7 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
         config: Arc::new(config),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
+        compact_override: Default::default(),
     })
 }
 
@@ -102,6 +103,7 @@ async fn picker_model_leads_the_row_list() {
         config: Arc::new(config),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
+        compact_override: Default::default(),
     });
 
     let response = app
@@ -111,10 +113,10 @@ async fn picker_model_leads_the_row_list() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    // Rows carry the readable provider/shorthand form, with the context
-    // marker this model's 1M window earns it.
+    // Rows carry the bare shorthand — names are unique across providers —
+    // with the context marker this model's 1M window earns it.
     let first = body.lines().next().unwrap();
-    assert_eq!(first, "beta/beta-pro[1m]\tBeta Model Pro");
+    assert_eq!(first, "beta-pro[1m]\tBeta Model Pro");
     // Every model still appears; only the order changes.
     assert_eq!(body.lines().count(), 3);
     let _ = std::fs::remove_dir_all(&dir);
@@ -134,6 +136,7 @@ fn per_user_mode_resolves_each_uid_to_its_own_home() {
         )),
         config,
         listen: "127.0.0.1:9999".parse().unwrap(),
+        compact_override: Default::default(),
     };
 
     // A real uid resolves to that user's own state directory.
@@ -160,6 +163,7 @@ fn single_user_mode_uses_one_store_for_everyone() {
         config: Arc::new(config),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
+        compact_override: Default::default(),
     };
 
     state.credentials(Some(1000)).set("alpha", "sk-shared").unwrap();
