@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# Signal this user's Claude Code processes — SIGHUP by default.
+#
+# Matches on the executable, not a cmdline substring: what actually runs is
+# `.claude-unwrapped`, the helpers (`claude bg-pty-host`, `claude bg-spare`)
+# rewrite their argv[0] to `claude`, and grepping for "claude" also hits
+# chromium, the claude_comm python helpers and every tool shell.
+#
+# The routers are left alone: both the packaged daemon and any stand-in run
+# as `claude-router`, which a name match would otherwise sweep up.
+#
+#   claude-hup            signal them (SIGHUP)
+#   claude-hup -n         list what would be signalled
+#   claude-hup -s TERM    a different signal
+#   claude-hup --all      include the session this script runs from
+set -u
+
+signal=HUP
+dry_run=0
+include_self=0
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -n|--dry-run) dry_run=1 ;;
+    -s|--signal) shift; signal="${1:-HUP}" ;;
+    --all) include_self=1 ;;
+    -h|--help) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
+
+# Everything between this process and pid 1, so running the script inside a
+# Claude session does not cut the branch it sits on.
+ancestors=""
+if [ "$include_self" -eq 0 ]; then
+  pid=$$
+  while [ "$pid" -gt 1 ]; do
+    ancestors="$ancestors $pid"
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || break
+    [ -n "$pid" ] || break
+  done
+fi
+
+is_ancestor() {
+  case " $ancestors " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+
+targets=""
+for dir in /proc/[0-9]*; do
+  pid=${dir#/proc/}
+  [ -O "$dir" ] || continue                       # this user's processes only
+
+  exe=$(readlink "$dir/exe" 2>/dev/null) || continue
+  base=${exe##*/}
+  case "$base" in
+    .claude-unwrapped|claude) ;;
+    *) continue ;;
+  esac
+
+  # `claude-router` never matches the two names above, but a future rename
+  # might; keep the guard explicit rather than implied.
+  argv0=$(tr '\0' '\n' < "$dir/cmdline" 2>/dev/null | head -n1)
+  case "${argv0##*/}" in claude-router*) continue ;; esac
+
+  is_ancestor "$pid" && continue
+  targets="$targets $pid"
+done
+
+if [ -z "$targets" ]; then
+  echo "no Claude Code processes found"
+  exit 0
+fi
+
+for pid in $targets; do
+  cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-90)
+  if [ "$dry_run" -eq 1 ]; then
+    printf 'would signal %-8s %s\n' "$pid" "$cmd"
+  else
+    printf 'SIG%-6s %-8s %s\n' "$signal" "$pid" "$cmd"
+    kill "-$signal" "$pid" 2>/dev/null || printf '  (already gone)\n'
+  fi
+done

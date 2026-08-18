@@ -71,13 +71,13 @@ async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
             // The custom picker entry skips ID validation, so it gets the
             // readable name rather than the discovery prefix — this is what
             // Claude Code shows next to the model in /model.
+            // Bare, because names are unique across providers — the config
+            // refuses to load otherwise — and this string is what Claude Code
+            // shows and accepts as `/model <name>`.
             let shorthand = model.aliases.first().map(String::as_str).unwrap_or(&model.id);
             let marker = crate::route::LARGE_CONTEXT_MARKER;
             let suffix = if model.has_large_context() { marker } else { "" };
-            rows.push((
-                chosen,
-                format!("{}/{shorthand}{suffix}\t{display}\n", provider.name),
-            ));
+            rows.push((chosen, format!("{shorthand}{suffix}\t{display}\n")));
         }
     }
     // Claude Code takes only one custom row, so the configured model leads;
