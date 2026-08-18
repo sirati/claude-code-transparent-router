@@ -53,12 +53,23 @@ pub async fn models(
                     .display_name
                     .clone()
                     .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
-                data.push(json!({
+                let mut entry = json!({
                     "type": "model",
                     "id": format!("{}/{}", provider.name, model.id),
                     "display_name": display_name,
                     "created_at": "2026-01-01T00:00:00Z",
-                }));
+                });
+                // Advertised for anything that reads the catalog. Claude Code
+                // is not one of them: its discovery reads only `id` and
+                // `display_name`, so the window reaches it through
+                // CLAUDE_CODE_MAX_CONTEXT_TOKENS, which the wrapper sets.
+                if let Some(window) = model.context_window {
+                    entry["context_window"] = json!(window);
+                }
+                if let Some(output) = model.max_output_tokens {
+                    entry["max_output_tokens"] = json!(output);
+                }
+                data.push(entry);
             }
         }
     }

@@ -33,6 +33,9 @@ struct FileConfig {
     /// activation. Absent or zero keeps the daemon resident.
     #[serde(default)]
     idle_timeout_secs: Option<u64>,
+    /// Overrides the context window reported for `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+    #[serde(default)]
+    context_tokens: Option<u64>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -150,6 +153,13 @@ enum FileModel {
         /// Shorter names for the same model, e.g. `sol` for `gpt-5.6-sol`.
         #[serde(default)]
         aliases: Vec<String>,
+        /// Tokens the model accepts. Claude Code assumes 200k for a model it
+        /// does not know, and compacts against that, so a bigger window has
+        /// to be declared somewhere.
+        #[serde(default)]
+        context_window: Option<u64>,
+        #[serde(default)]
+        max_output_tokens: Option<u64>,
     },
 }
 
@@ -167,6 +177,8 @@ pub struct Config {
     pub user_config: bool,
     /// Idle seconds before the daemon exits; None or zero means stay.
     pub idle_timeout_secs: Option<u64>,
+    /// Explicit session context window, overriding what the models imply.
+    pub context_tokens: Option<u64>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -190,12 +202,23 @@ pub struct Model {
     pub display_name: Option<String>,
     /// Shorthands that select this model, alongside its ID.
     pub aliases: Vec<String>,
+    /// Tokens the model accepts, and will emit, when known.
+    pub context_window: Option<u64>,
+    pub max_output_tokens: Option<u64>,
 }
+
+/// A window this size or larger is declared with Claude Code's `[1m]` marker
+/// rather than through the session-wide token setting.
+pub const LARGE_CONTEXT: u64 = 1_000_000;
 
 impl Model {
     /// Does `name` select this model? Its ID or any of its shorthands do.
     pub fn matches(&self, name: &str) -> bool {
         self.id == name || self.aliases.iter().any(|alias| alias == name)
+    }
+
+    pub fn has_large_context(&self) -> bool {
+        self.context_window.is_some_and(|window| window >= LARGE_CONTEXT)
     }
 
     /// Every name this model answers to.
@@ -252,12 +275,26 @@ impl Config {
                     .models
                     .into_iter()
                     .map(|m| match m {
-                        FileModel::Id(id) => {
-                            Model { id, display_name: None, aliases: Vec::new() }
-                        }
-                        FileModel::Full { id, name, aliases } => {
-                            Model { id, display_name: name, aliases }
-                        }
+                        FileModel::Id(id) => Model {
+                            id,
+                            display_name: None,
+                            aliases: Vec::new(),
+                            context_window: None,
+                            max_output_tokens: None,
+                        },
+                        FileModel::Full {
+                            id,
+                            name,
+                            aliases,
+                            context_window,
+                            max_output_tokens,
+                        } => Model {
+                            id,
+                            display_name: name,
+                            aliases,
+                            context_window,
+                            max_output_tokens,
+                        },
                     })
                     .collect(),
             })
@@ -282,6 +319,7 @@ impl Config {
             },
             user_config: file.user_config,
             idle_timeout_secs: file.idle_timeout_secs,
+            context_tokens: file.context_tokens,
             picker_model: file.picker_model,
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),

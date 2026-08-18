@@ -2,6 +2,11 @@ use serde::Deserialize;
 
 use crate::config::Config;
 
+/// Claude Code's marker for "assume a 1M window". It is per model name,
+/// which is the only per-model way to declare a window, so models that large
+/// are advertised with it.
+pub const LARGE_CONTEXT_MARKER: &str = "[1m]";
+
 pub enum Backend {
     Anthropic,
     Provider { provider: usize, real_model: String },
@@ -33,6 +38,10 @@ pub fn route(config: &Config, body: &[u8]) -> Backend {
 /// In both forms `<model>` may be the upstream ID or one of its shorthands.
 /// Anything else is Anthropic's to answer.
 pub fn resolve(config: &Config, model: &str) -> Backend {
+    // Claude Code strips its context marker before sending, but a model named
+    // by hand may still carry one.
+    let model = model.strip_suffix(LARGE_CONTEXT_MARKER).unwrap_or(model);
+
     if let Some((provider, rest)) = model.split_once('/') {
         return match find(config, Some(provider), rest) {
             Some(backend) => backend,

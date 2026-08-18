@@ -113,7 +113,7 @@ anything beside it overrides that. Without one, spell it out:
 [providers.glm]
 base_url = "https://api.z.ai/api/paas/v4"
 api = "openai"                              # openai | anthropic | responses
-models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
+models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"], context_window = 200000 }]
 
 [providers.glm.effort]                      # optional
 field = "reasoning_effort"
@@ -166,6 +166,22 @@ if [ -n "$entry" ]; then
 fi
 exec claude "$@"
 ```
+
+## Context windows
+
+Claude Code assumes 200k tokens for a model it does not recognise and
+compacts against that. Declare `context_window` per model and the router
+handles the rest:
+
+- models at 1M or more are named with Claude Code's `[1m]` marker, which is
+  the only per-model way to state a window;
+- the smallest window among the remaining models is served at
+  `/__router/context-window`, and the wrapper exports it as
+  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — that setting is per session, not per
+  model, so the smallest is the only value safe for all of them.
+
+Set `context_tokens` in the config to override that number. Anthropic models
+ignore the variable, so the main session is unaffected either way.
 
 ## Agents
 

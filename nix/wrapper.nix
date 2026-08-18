@@ -29,5 +29,15 @@ writeShellScriptBin name ''
     model_name=$(printf '%s' "$entry" | cut -f2)
     [ -n "$model_name" ] && export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$model_name"
   fi
+  # Claude Code assumes 200k for a model it does not know. Models at 1M carry
+  # the [1m] marker in their name; this covers the smaller ones. It is
+  # ignored for Anthropic models, so the main session is unaffected.
+  if [ -z "''${CLAUDE_CODE_MAX_CONTEXT_TOKENS:-}" ]; then
+    window=$(${curl}/bin/curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/context-window") || window=""
+    case "$window" in
+      "" | *[!0-9]*) ;;
+      *) export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$window" ;;
+    esac
+  fi
   exec ${lib.getExe claude-code} "$@"
 ''

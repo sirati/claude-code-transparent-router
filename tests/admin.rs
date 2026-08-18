@@ -111,11 +111,44 @@ async fn picker_model_leads_the_row_list() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
-    // Rows carry the readable provider/shorthand form, not the discovery prefix.
+    // Rows carry the readable provider/shorthand form, with the context
+    // marker this model's 1M window earns it.
     let first = body.lines().next().unwrap();
-    assert_eq!(first, "beta/beta-pro\tBeta Model Pro");
+    assert_eq!(first, "beta/beta-pro[1m]\tBeta Model Pro");
     // Every model still appears; only the order changes.
     assert_eq!(body.lines().count(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Claude Code can be told a window two ways, each covering models the other
+/// cannot: `[1m]` per model name, and one session-wide token count.
+#[tokio::test]
+async fn large_models_are_marked_and_the_rest_set_the_session_window() {
+    let dir = std::env::temp_dir().join(format!("window-test-{}", std::process::id()));
+    let app = test_app(&dir);
+
+    let response = app
+        .clone()
+        .oneshot(Request::get("/__router/picker").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let picker = String::from_utf8(bytes.to_vec()).unwrap();
+
+    // beta-model is 1M, so it carries the marker; the alpha models do not.
+    assert!(picker.contains("beta/beta-pro[1m]\t"), "{picker}");
+    assert!(picker.contains("alpha/alpha-model\t"), "{picker}");
+    assert!(!picker.contains("alpha/alpha-model[1m]"), "{picker}");
+
+    let response = app
+        .oneshot(Request::get("/__router/context-window").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    // The smallest window among the models the marker does not cover: over
+    // declaring would have the provider reject the turn.
+    assert_eq!(String::from_utf8(bytes.to_vec()).unwrap(), "128000");
+
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -22,13 +22,22 @@ let
         // lib.optionalAttrs (p.baseUrl != null) { base_url = p.baseUrl; }
         // lib.optionalAttrs (p.api != null) { api = p.api; }
         // lib.optionalAttrs (p.models != [ ]) {
-          models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
+          models = map (
+            m:
+            if builtins.isString m then
+              m
+            else
+              { inherit (m) id name; }
+              // lib.optionalAttrs (m.aliases != [ ]) { inherit (m) aliases; }
+              // lib.optionalAttrs (m.contextWindow != null) { context_window = m.contextWindow; }
+          ) p.models;
         }
         // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
       ) cfg.providers;
     }
     # TOML has no null, so an unset choice is an absent key.
     // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; }
+    // lib.optionalAttrs (cfg.contextTokens != null) { context_tokens = cfg.contextTokens; }
     // cfg.extraSettings
   );
 
@@ -38,28 +47,61 @@ let
     routerUrl = "http://127.0.0.1:${toString cfg.port}";
   };
 
-  # Agents name a provider and a model; the router accepts that spelling
-  # directly, so no `anthropic/` prefix is involved.
-  agentModel = agent:
-    if agent.provider == null then agent.model else "${agent.provider}/${agent.model}";
+  # Claude Code assumes 200k for a model it does not know. `[1m]` is the one
+  # per-model way to say otherwise, so models that large are named with it;
+  # the smaller ones are covered by CLAUDE_CODE_MAX_CONTEXT_TOKENS, which the
+  # wrapper sets from the daemon.
+  largeContext = 1000000;
 
-  # A preset's model list lives in its TOML, so read it back to validate
-  # agents against providers that were configured with nothing but a preset.
-  presetModels =
+  # Agents name a provider and a model; the router accepts that spelling
+  # directly and strips the marker before routing.
+  agentModel =
+    agent:
+    if agent.provider == null then
+      agent.model
+    else
+      let
+        window = modelWindow agent.provider agent.model;
+        marker = lib.optionalString (window != null && window >= largeContext) "[1m]";
+      in
+      "${agent.provider}/${agent.model}${marker}";
+
+  # A preset's models live in its TOML, so read them back: agents are
+  # validated against providers configured with nothing but a preset, and
+  # their context windows come from there too.
+  presetEntries =
     preset:
     let
       file = ../presets + "/${preset}.toml";
       parsed = builtins.fromTOML (builtins.readFile file);
     in
-    if builtins.pathExists file then modelNames (parsed.models or [ ]) else [ ];
+    if builtins.pathExists file then (parsed.models or [ ]) else [ ];
 
-  # Every name a model answers to: its ID and its shorthands.
-  modelNames = lib.concatMap (
-    m: if builtins.isString m then [ m ] else [ m.id ] ++ (m.aliases or [ ])
-  );
+  entryOf =
+    m:
+    if builtins.isString m then
+      { id = m; aliases = [ ]; window = null; }
+    else
+      {
+        id = m.id;
+        aliases = m.aliases or [ ];
+        window = m.context_window or (m.contextWindow or null);
+      };
 
-  providerModels =
-    p: modelNames p.models ++ lib.optionals (p.preset != null) (presetModels p.preset);
+  providerEntries =
+    p: map entryOf p.models ++ lib.optionals (p.preset != null) (map entryOf (presetEntries p.preset));
+
+  providerModels = p: lib.concatMap (e: [ e.id ] ++ e.aliases) (providerEntries p);
+
+  modelWindow =
+    provider: model:
+    let
+      entries = lib.optionals (cfg.providers ? ${provider}) (
+        providerEntries cfg.providers.${provider}
+      );
+      hit = lib.findFirst (e: e.id == model || lib.elem model e.aliases) null entries;
+    in
+    if hit == null then null else hit.window;
 
   # Claude Code's picker holds exactly one custom entry, but a subagent's
   # frontmatter can name any model — so agents are how the other routed
@@ -191,6 +233,16 @@ in
       '';
     };
 
+    contextTokens = lib.mkOption {
+      type = lib.types.nullOr lib.types.int;
+      default = null;
+      description = ''
+        Pins the window exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. By
+        default it is the smallest among the models that do not carry the
+        `[1m]` marker, which is the only value safe for all of them.
+      '';
+    };
+
     agentDirs = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ".claude" ];
@@ -319,12 +371,26 @@ in
                       type = lib.types.str;
                       description = "Display name shown in Claude Code's model switcher.";
                     };
+                    aliases = lib.mkOption {
+                      type = lib.types.listOf lib.types.str;
+                      default = [ ];
+                      description = "Shorthands that also select this model.";
+                    };
+                    contextWindow = lib.mkOption {
+                      type = lib.types.nullOr lib.types.int;
+                      default = null;
+                      description = ''
+                        Tokens the model accepts. Claude Code assumes 200k for
+                        a model it does not know, so declaring this is what
+                        stops it compacting too early.
+                      '';
+                    };
                   };
                 }
               )
             );
             default = [ ];
-            description = "Upstream models to expose: bare IDs or { id, name }.";
+            description = "Upstream models to expose: bare IDs or { id, name, ... }.";
           };
 
           effort = lib.mkOption {

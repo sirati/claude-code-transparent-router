@@ -2,12 +2,17 @@ listen = "127.0.0.1:9999"
 
 [providers.alpha]
 base_url = "http://alpha.example/v1"
-models = ["alpha-model", "alpha-model-mini"]
+models = [
+  { id = "alpha-model", context_window = 400000 },
+  { id = "alpha-model-mini", context_window = 128000 },
+]
 
 [providers.beta]
 base_url = "http://beta.example/v1/"
 api = "anthropic"
-models = [{ id = "beta-model", name = "Beta Model Pro", aliases = ["beta-pro"] }]
+models = [
+  { id = "beta-model", name = "Beta Model Pro", aliases = ["beta-pro"], context_window = 1000000 },
+]
 
 [providers.beta.effort]
 field = "reasoning.effort"

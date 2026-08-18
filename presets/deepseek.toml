@@ -8,8 +8,8 @@ api = "anthropic"
 # Shorthands select the newest model of that line, so `/model pro` keeps
 # working across a version bump while `pro-v4` stays exact.
 models = [
-  { id = "deepseek-v4-pro", name = "DeepSeek 4 Pro", aliases = ["pro", "pro-v4"] },
-  { id = "deepseek-v4-flash", name = "DeepSeek 4 Flash", aliases = ["flash", "flash-v4"] },
+  { id = "deepseek-v4-pro", name = "DeepSeek 4 Pro", aliases = ["pro", "pro-v4"], context_window = 1000000, max_output_tokens = 384000 },
+  { id = "deepseek-v4-flash", name = "DeepSeek 4 Flash", aliases = ["flash", "flash-v4"], context_window = 1000000, max_output_tokens = 384000 },
 ]
 
 [effort]

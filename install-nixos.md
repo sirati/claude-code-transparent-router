@@ -117,6 +117,19 @@ services.claude-router = {
 rebuild rather than a conversation. With the system-wide service, write the
 agent files yourself.
 
+## Context windows
+
+Claude Code assumes 200k tokens for a model it does not recognise. The
+presets declare each model's real window, and the router handles the rest:
+models at 1M or more are named with Claude Code's `[1m]` marker, and the
+smallest window among the others is exported as
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` by the wrapper — that variable is per
+session rather than per model, so the smallest is the only value safe for
+all of them. Anthropic models ignore it, so the main session is unaffected.
+
+Declare `contextWindow` on a hand-configured model, or set `contextTokens`
+to pin the exported number.
+
 ## Troubleshooting
 
 `journalctl --user -u claude-router` — or without `--user` for the system
