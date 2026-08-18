@@ -9,13 +9,34 @@ inputs.claude-router = {
 };
 ```
 
-## 2. Import the home-manager module
+## 2. Install the service
+
+Pick one. Both are socket-activated: systemd holds `127.0.0.1:8787`, starts
+the daemon on Claude Code's first request, and it exits after `idleTimeout`
+seconds (default 300).
+
+|  | User service | System-wide |
+| --- | --- | --- |
+| Module | `homeManagerModules.default` | `nixosModules.default` |
+| Providers configured in | your home config | each user's `~/.config/claude-router/config.toml` |
+| Users per machine | one per port | any number, one port |
+
+The two are equally secure. In both, the port is loopback-only, credentials
+live in one user's own files, and the daemon identifies its caller by the uid
+the kernel reports for the connection rather than anything the client claims.
+The system-wide service additionally runs as `DynamicUser` with `ProtectHome
+= "read-only"`, so it reads each user's config and credentials and can never
+write to them.
+
+Prefer system-wide on a machine with more than one user: a user service per
+person would need a distinct port each, since the first to start takes 8787
+and the rest fail to bind.
+
+### User service
 
 ```nix
 home-manager.sharedModules = [ inputs.claude-router.homeManagerModules.default ];
 ```
-
-## 3. Configure it
 
 ```nix
 services.claude-router = {
@@ -30,29 +51,43 @@ services.claude-router = {
 };
 ```
 
+### System-wide
+
+```nix
+imports = [ inputs.claude-router.nixosModules.default ];
+
+services.claude-router = {
+  enable = true;
+  wrapperName = "claude";
+  # allowedUids = [ 1000 1001 ];   # optional: refuse everyone else
+};
+```
+
+No providers here — each user writes their own
+`~/.config/claude-router/config.toml`, in the same format as
+[install-systemd-linux.md](install-systemd-linux.md#configure), and manages
+their credentials with the same TUI. To pin a key to the machine rather than
+a person, give a provider an `apiKeyFile`; systemd credentials outrank a
+user's own key.
+
+## 3. Use it
+
 Also remove `claude-code` from `environment.systemPackages`: with
 `wrapperName = "claude"` two `claude` binaries would otherwise compete on
 `PATH`. The wrapper still launches it — by default `pkgs.claude-code`,
 including any overlay you apply, or set `claudeCodePackage` to something
 else.
 
-## 4. Rebuild and use it
-
 ```console
 $ claude-router      # TUI: [s]et an API key, [l]og in
 $ claude             # Claude Code, routed
 ```
 
-The daemon is a socket-activated user service: systemd holds
-`127.0.0.1:8787`, starts it on the first request, and it exits after
-`idleTimeout` seconds (default 300). Only your uid may connect.
-
----
-
 ## Agents
 
 Claude Code shows one custom model in `/model`, chosen by `pickerModel`. The
-others stay selectable as subagents:
+others stay selectable as subagents (user service only; with the system-wide
+service, write the files yourself):
 
 ```nix
 services.claude-router = {
@@ -72,30 +107,6 @@ services.claude-router = {
 build, so a typo fails the rebuild rather than a conversation. Models can be
 selected by full ID, by shorthand, or qualified: `/model sol`, `codex/sol`,
 `gpt-5.6-sol`.
-
-## Shared machines
-
-For several users, run one system service instead of a user service each
-(which would need a distinct port per person):
-
-```nix
-imports = [ inputs.claude-router.nixosModules.default ];
-
-services.claude-router = {
-  enable = true;
-  wrapperName = "claude";
-  # allowedUids = [ 1000 1001 ];   # optional: refuse everyone else
-};
-```
-
-No providers are configured here. The daemon resolves each connecting uid to
-its home and reads that user's own `~/.config/claude-router/config.toml`, so
-everyone keeps their own providers and credentials and uses the same TUI. It
-runs as `DynamicUser` with `ProtectHome = "read-only"`, so it reads those
-files and never writes them.
-
-A provider given an `apiKeyFile` gets a machine-level key from systemd
-credentials, which outranks any user's own key for that provider.
 
 ## Troubleshooting
 
