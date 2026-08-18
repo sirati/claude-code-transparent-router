@@ -161,8 +161,21 @@ these providers have no count endpoint.
 
 The module generates the TOML config, wires one `LoadCredential` per
 provider, and socket-activates the service on `127.0.0.1:8787` as
-`DynamicUser` with a hardened sandbox. `claude-routed` is installed
-system-wide unless `installClaudeRouted = false`.
+`DynamicUser` with a hardened sandbox.
+
+The Claude Code wrapper is installed system-wide (`installWrapper = false`
+to opt out) and is configurable:
+
+```nix
+services.claude-router = {
+  # Which Claude Code the wrapper launches. Defaults to pkgs.claude-code,
+  # including any overlay you already apply; point it elsewhere if you like.
+  claudeCodePackage = inputs.claude-code-nix.packages.${system}.default;
+  # Install as `claude` rather than `claude-routed`. Then do not also install
+  # claude-code system-wide, or the two collide over bin/claude.
+  wrapperName = "claude";
+};
+```
 
 ## Development
 

@@ -20,6 +20,12 @@ let
   };
 
   providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
+
+  wrapper = pkgs.callPackage ./wrapper.nix {
+    claude-code = cfg.claudeCodePackage;
+    name = cfg.wrapperName;
+    routerUrl = "http://127.0.0.1:${toString cfg.port}";
+  };
 in
 {
   options.services.claude-router = {
@@ -30,15 +36,52 @@ in
       description = "The claude-code-transparent-router package to run.";
     };
 
-    claudeRoutedPackage = lib.mkOption {
+    claudeCodePackage = lib.mkOption {
       type = lib.types.package;
-      description = "Claude Code wrapper (claude-routed) pointed at the router.";
+      default = pkgs.claude-code;
+      defaultText = lib.literalExpression "pkgs.claude-code";
+      example = lib.literalExpression "inputs.claude-code-nix.packages.\${system}.default";
+      description = ''
+        Claude Code package the wrapper launches. Defaults to the one in the
+        nixpkgs this module is evaluated with (including any overlay you
+        already apply); set it to use a different source.
+      '';
     };
 
-    installClaudeRouted = lib.mkOption {
+    wrapperName = lib.mkOption {
+      type = lib.types.str;
+      default = "claude-routed";
+      example = "claude";
+      description = ''
+        Command name the wrapper is installed as. Use "claude" to have the
+        routed CLI be the one on PATH — in that case do not also install
+        claude-code itself system-wide, or the two collide over bin/claude.
+      '';
+    };
+
+    installWrapper = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Install the claude-routed wrapper system-wide.";
+      description = "Install the Claude Code wrapper system-wide.";
+    };
+
+    settingsFile = lib.mkOption {
+      type = lib.types.path;
+      readOnly = true;
+      default = configFile;
+      defaultText = lib.literalExpression "<generated claude-router.toml>";
+      description = "The generated router config, exposed for inspection.";
+    };
+
+    wrapperPackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = wrapper;
+      defaultText = lib.literalExpression "<wrapper built from claudeCodePackage>";
+      description = ''
+        The built wrapper, exposed so it can be added to a user profile or
+        home-manager configuration instead of (or besides) the system one.
+      '';
     };
 
     port = lib.mkOption {
@@ -168,7 +211,11 @@ in
   };
 
   config = lib.mkIf cfg.enable {
-    environment.systemPackages = lib.mkIf cfg.installClaudeRouted [ cfg.claudeRoutedPackage ];
+    environment.systemPackages =
+      lib.optional cfg.installWrapper wrapper
+      # The router binary is also the login/TUI client, so it belongs on PATH
+      # wherever the wrapper does.
+      ++ lib.optional cfg.installWrapper cfg.package;
 
     systemd.sockets.claude-router = {
       wantedBy = [ "sockets.target" ];

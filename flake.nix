@@ -41,22 +41,9 @@
             cargoLock.lockFile = ./Cargo.lock;
             meta.mainProgram = "claude-router";
           };
-          # Claude Code pointed at the router; the credential flow stays
-          # Claude Code's own. Gateway model discovery (API-key auth only)
-          # fetches /v1/models from the router; under claude.ai OAuth it never
-          # runs, so the wrapper also asks the daemon for its picker rows and
-          # exposes the first as the single supported custom /model entry.
-          claude-routed = pkgs.writeShellScriptBin "claude-routed" ''
-            export ANTHROPIC_BASE_URL="''${CLAUDE_ROUTER_URL:-http://127.0.0.1:8787}"
-            export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
-            entry=$(${pkgs.curl}/bin/curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/picker" | head -n1) || entry=""
-            if [ -n "$entry" ]; then
-              export ANTHROPIC_CUSTOM_MODEL_OPTION=$(printf '%s' "$entry" | cut -f1)
-              name=$(printf '%s' "$entry" | cut -f2)
-              [ -n "$name" ] && export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$name"
-            fi
-            exec ${pkgs.claude-code}/bin/claude "$@"
-          '';
+          # Defaults to this nixpkgs' claude-code; no third-party flake is
+          # pulled in. Override it per nix/wrapper.nix to use another source.
+          claude-routed = pkgs.callPackage ./nix/wrapper.nix { };
         in
         {
           inherit claude-code-transparent-router claude-routed;
@@ -75,14 +62,16 @@
         };
       });
 
+      # The wrapper as a plain package function, for callers who want it
+      # outside the NixOS module: pkgs.callPackage flake.lib.wrapper { … }.
+      lib.wrapper = ./nix/wrapper.nix;
+
       nixosModules.default =
         { pkgs, lib, ... }:
         {
           imports = [ ./nix/module.nix ];
           services.claude-router.package =
             lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.claude-code-transparent-router;
-          services.claude-router.claudeRoutedPackage =
-            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.claude-routed;
         };
     };
 }
