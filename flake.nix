@@ -26,6 +26,9 @@
           pkgs = import nixpkgs {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
+            # claude-code is unfree; nothing else needs the exception.
+            config.allowUnfreePredicate =
+              pkg: nixpkgs.lib.getName pkg == "claude-code";
           };
           rustPlatform = pkgs.makeRustPlatform {
             cargo = pkgs.rust-bin.stable.latest.minimal;
