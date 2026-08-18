@@ -41,10 +41,14 @@ pub async fn models(State(state): State<AppState>, req: Request) -> Response {
     if let (true, Some(data)) = (last_page, catalog["data"].as_array_mut()) {
         for provider in &state.config.providers {
             for model in &provider.models {
+                let display_name = model
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
                 data.push(json!({
                     "type": "model",
-                    "id": format!("{ALIAS_PREFIX}{model}"),
-                    "display_name": format!("{model} (via {})", provider.name),
+                    "id": format!("{ALIAS_PREFIX}{}", model.id),
+                    "display_name": display_name,
                     "created_at": "2026-01-01T00:00:00Z",
                 }));
             }

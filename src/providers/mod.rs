@@ -3,11 +3,13 @@
 //! body bytes and the model only, so the Anthropic credential cannot leak
 //! here by construction.
 
+pub mod anthropic_compat;
 pub mod openai_compat;
 
 use axum::body::Bytes;
 use axum::response::Response;
 
+use crate::config::ApiFormat;
 use crate::{passthrough, AppState};
 
 pub async fn dispatch(
@@ -30,8 +32,15 @@ pub async fn dispatch(
             env = provider.name.to_uppercase().replace('-', "_"),
         ));
     };
-    tracing::info!(provider = provider.name, model = real_model, "translating");
-    openai_compat::messages(&state.client, provider, key, body, real_model).await
+    tracing::info!(provider = provider.name, model = real_model, api = ?provider.api, "routing");
+    match provider.api {
+        ApiFormat::Openai => {
+            openai_compat::messages(&state.client, provider, key, body, real_model).await
+        }
+        ApiFormat::Anthropic => {
+            anthropic_compat::messages(&state.client, provider, key, body, real_model).await
+        }
+    }
 }
 
 /// Token counting for provider models: a coarse local estimate (these

@@ -10,18 +10,22 @@ use tokio::net::TcpListener;
 
 struct Args {
     config: Option<PathBuf>,
-    headless: bool,
+    daemon: bool,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { config: None, headless: false };
+    let mut args = Args { config: None, daemon: false };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--config" => args.config = argv.next().map(PathBuf::from),
-            "--headless" => args.headless = true,
+            "--daemon" => args.daemon = true,
             "--help" | "-h" => {
-                println!("claude-router [--config <path>] [--headless]");
+                println!(
+                    "claude-router [--config <path>] [--daemon]\n\n\
+                     From a terminal: opens the TUI that configures the running daemon.\n\
+                     --daemon (or no TTY): runs the daemon itself."
+                );
                 std::process::exit(0);
             }
             other => {
@@ -33,21 +37,39 @@ fn parse_args() -> Args {
     args
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     let args = parse_args();
-    // The TUI owns the terminal; interactive runs log to a file instead.
-    let interactive = !args.headless && std::io::stdout().is_terminal();
-
     let config = match config::Config::load(args.config) {
-        Ok(config) => Arc::new(config),
+        Ok(config) => config,
         Err(err) => {
             eprintln!("config error: {err}");
             std::process::exit(1);
         }
     };
-    init_tracing(interactive, &config);
 
+    // Terminal launch = TUI client for the running daemon; it never listens.
+    if !args.daemon && std::io::stdout().is_terminal() {
+        if let Err(err) = tui::run(&config) {
+            eprintln!("tui error: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "claude_code_transparent_router=info,claude_router=info".into()),
+        )
+        .init();
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime")
+        .block_on(serve(Arc::new(config)));
+}
+
+async fn serve(config: Arc<config::Config>) {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         // No total request timeout: SSE turns run for minutes.
@@ -62,9 +84,6 @@ async fn main() {
         .build()
         .expect("reqwest client");
 
-    let credentials = Arc::new(CredentialStore::new(config.credentials_dir.clone()));
-    let state = AppState { client, config: config.clone(), credentials: credentials.clone() };
-
     // Socket-activated FD from systemd when present, plain loopback bind otherwise.
     let listener = match ListenFd::from_env().take_tcp_listener(0) {
         Ok(Some(std_listener)) => {
@@ -74,64 +93,24 @@ async fn main() {
         _ => match TcpListener::bind(config.listen).await {
             Ok(listener) => listener,
             Err(err) => {
-                eprintln!("cannot listen on {}: {err} (is another claude-router running?)", config.listen);
+                eprintln!(
+                    "cannot listen on {}: {err} (is another claude-router daemon running?)",
+                    config.listen
+                );
                 std::process::exit(1);
             }
         },
     };
-    let local_addr = listener.local_addr().expect("local addr");
-    tracing::info!(addr = %local_addr, "claude-router listening");
+    let listen = listener.local_addr().expect("local addr");
+    tracing::info!(addr = %listen, "claude-router daemon listening");
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
-    let server = tokio::spawn(async move {
-        axum::serve(listener, app(state))
-            .with_graceful_shutdown(async {
-                let _ = shutdown_rx.await;
-            })
-            .await
-    });
+    let credentials = Arc::new(CredentialStore::new(config.credentials_dir.clone()));
+    let state = AppState { client, config, credentials, listen };
 
-    if interactive {
-        let tui_config = config.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            tui::run(tui_config, credentials, local_addr)
-        })
-        .await;
-        if let Err(err) = result.expect("tui thread") {
-            eprintln!("tui error: {err}");
-        }
-        let _ = shutdown_tx.send(());
-    } else {
-        shutdown_signal().await;
-        let _ = shutdown_tx.send(());
-    }
-    let _ = server.await.expect("server task");
-}
-
-fn init_tracing(interactive: bool, config: &config::Config) {
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "claude_code_transparent_router=info,claude_router=info".into());
-    if interactive {
-        let log_dir = config
-            .credentials_dir
-            .parent()
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
-        let _ = std::fs::create_dir_all(&log_dir);
-        if let Ok(file) = std::fs::File::options()
-            .create(true)
-            .append(true)
-            .open(log_dir.join("router.log"))
-        {
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(file)
-                .with_ansi(false)
-                .init();
-        }
-    } else {
-        tracing_subscriber::fmt().with_env_filter(filter).init();
-    }
+    axum::serve(listener, app(state))
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("serve");
 }
 
 async fn shutdown_signal() {

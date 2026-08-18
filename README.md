@@ -1,8 +1,9 @@
 # claude-code-transparent-router
 
 Loopback HTTP router for Claude Code. Anthropic models pass through to
-`api.anthropic.com` unchanged; models aliased as `anthropic/<id>` are
-translated to OpenAI-compatible providers (GLM, DeepSeek, ...).
+`api.anthropic.com` unchanged; models aliased as `anthropic/<id>` are routed
+to second providers — either their Anthropic-compatible endpoints
+(near-passthrough) or OpenAI-compatible ones (full Messages translation).
 
 ## Behavior
 
@@ -22,15 +23,27 @@ translated to OpenAI-compatible providers (GLM, DeepSeek, ...).
 
 ## Usage
 
+The binary is both the daemon and its control CLI:
+
+- `claude-router --daemon` (or any run without a TTY, e.g. under systemd)
+  is the daemon — the only thing that listens.
+- `claude-router` from a terminal opens a TUI that configures the *running*
+  daemon over its loopback admin API (`/__router/*`); it does not listen
+  itself. It shows the configured providers and their credential status, and
+  can set or clear credentials — pasted keys are masked (short prefix
+  visible, the rest `****`). Changes apply to the daemon immediately.
+
 ```console
-$ nix run github:sirati/claude-code-transparent-router                 # router on 127.0.0.1:8787
+$ nix run github:sirati/claude-code-transparent-router -- --daemon   # daemon on 127.0.0.1:8787
+$ nix run github:sirati/claude-code-transparent-router                 # TUI for the running daemon
 $ nix run github:sirati/claude-code-transparent-router#claude-routed   # Claude Code pointed at it
 ```
 
-Run from a terminal, the router opens a TUI listing the configured providers
-and their credential status, with actions to set or clear credentials. Key
-entry is masked: a short prefix stays visible, the rest shows as `****`.
-`--headless` (or no TTY) runs the plain server.
+State lives in the standard locations: config in
+`~/.config/claude-router/config.toml`, credentials in
+`~/.local/state/claude-router/credentials/` (under systemd:
+`/var/lib/claude-router/credentials` via `StateDirectory`), logs on stderr
+(journald).
 
 ## Configuration
 
@@ -43,13 +56,20 @@ listen = "127.0.0.1:8787"                         # optional
 anthropic_upstream = "https://api.anthropic.com"  # optional
 
 [providers.glm]
-base_url = "https://api.z.ai/api/paas/v4"
+base_url = "https://api.z.ai/api/paas/v4"   # OpenAI-format endpoint -> translated
 models = ["glm-4.7"]
 
 [providers.deepseek]
-base_url = "https://api.deepseek.com/v1"
-models = ["deepseek-chat"]
+base_url = "https://api.deepseek.com/anthropic"  # Anthropic-format endpoint
+api = "anthropic"                                # -> near-passthrough
+models = [{ id = "deepseek-v4-pro", name = "DeepSeek 4 Pro" }]
 ```
+
+`api` selects the provider's dialect: `"anthropic"` endpoints get
+near-passthrough (only the model ID is rewritten and the credential swapped),
+`"openai"` (the default) goes through the Messages ↔ chat-completions
+translator. A model entry is a bare upstream ID or `{ id, name }`; `name` is
+the display name shown in Claude Code's model switcher.
 
 Model IDs must be unique across providers, since aliases don't carry the
 provider name.

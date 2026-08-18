@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 /// Collect the anthropic event types emitted for a sequence of OpenAI SSE lines.
 fn run_translator(lines: &[&str]) -> (String, Vec<String>) {
-    let mut translator = stream::Translator::new("anthropic/glm-4.7".into());
+    let mut translator = stream::Translator::new("anthropic/test-model".into());
     let mut out = String::new();
     for line in lines {
         translator.on_line(line, &mut out);
@@ -104,7 +104,7 @@ fn stream_without_done_still_closes() {
 #[test]
 fn request_translation_maps_tools_and_history() {
     let anthropic = json!({
-        "model": "anthropic/glm-4.7",
+        "model": "anthropic/test-model",
         "max_tokens": 1000,
         "system": [{"type": "text", "text": "be brief"}],
         "messages": [
@@ -120,8 +120,8 @@ fn request_translation_maps_tools_and_history() {
         "tools": [{"name": "get_weather", "description": "d", "input_schema": {"type": "object"}}],
         "tool_choice": {"type": "auto"}
     });
-    let openai = request::to_openai(&anthropic, "glm-4.7", true);
-    assert_eq!(openai["model"], "glm-4.7");
+    let openai = request::to_openai(&anthropic, "test-model", true);
+    assert_eq!(openai["model"], "test-model");
     assert_eq!(openai["stream"], json!(true));
     let messages = openai["messages"].as_array().unwrap();
     assert_eq!(messages[0]["role"], "system");
@@ -150,8 +150,8 @@ fn response_translation_maps_tool_calls_and_usage() {
         }],
         "usage": {"prompt_tokens": 7, "completion_tokens": 3}
     });
-    let msg = response::to_anthropic(&openai, "anthropic/glm-4.7");
-    assert_eq!(msg["model"], "anthropic/glm-4.7");
+    let msg = response::to_anthropic(&openai, "anthropic/test-model");
+    assert_eq!(msg["model"], "anthropic/test-model");
     assert_eq!(msg["stop_reason"], "tool_use");
     assert_eq!(msg["content"][0]["text"], "on it");
     assert_eq!(msg["content"][1]["input"], json!({"a": 1}));

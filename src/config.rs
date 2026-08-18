@@ -19,7 +19,28 @@ struct FileConfig {
 struct FileProvider {
     base_url: String,
     #[serde(default)]
-    models: Vec<String>,
+    api: Option<ApiFormat>,
+    #[serde(default)]
+    models: Vec<FileModel>,
+}
+
+/// Which API dialect the provider speaks. `anthropic` providers get
+/// near-passthrough (model rewrite + credential swap, response verbatim);
+/// `openai` providers go through the Messages <-> chat-completions translator.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiFormat {
+    Openai,
+    Anthropic,
+}
+
+/// A model entry: either a bare upstream ID, or an ID plus the display name
+/// shown in Claude Code's model switcher.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum FileModel {
+    Id(String),
+    Named { id: String, name: String },
 }
 
 pub struct Config {
@@ -35,10 +56,16 @@ pub struct Config {
 
 pub struct ProviderConfig {
     pub name: String,
-    /// OpenAI-compatible chat-completions base URL, no trailing slash.
+    /// Provider API base URL, no trailing slash.
     pub base_url: String,
-    /// Real upstream model IDs, served in /v1/models as `anthropic/<id>`.
-    pub models: Vec<String>,
+    pub api: ApiFormat,
+    /// Real upstream models, served in /v1/models as `anthropic/<id>`.
+    pub models: Vec<Model>,
+}
+
+pub struct Model {
+    pub id: String,
+    pub display_name: Option<String>,
 }
 
 impl Config {
@@ -70,7 +97,15 @@ impl Config {
             .map(|(name, p)| ProviderConfig {
                 name,
                 base_url: p.base_url.trim_end_matches('/').to_string(),
-                models: p.models,
+                api: p.api.unwrap_or(ApiFormat::Openai),
+                models: p
+                    .models
+                    .into_iter()
+                    .map(|m| match m {
+                        FileModel::Id(id) => Model { id, display_name: None },
+                        FileModel::Named { id, name } => Model { id, display_name: Some(name) },
+                    })
+                    .collect(),
             })
             .collect();
         check_unique_models(&providers)?;
@@ -82,16 +117,14 @@ impl Config {
                 .unwrap_or_else(|| "https://api.anthropic.com".into())
                 .trim_end_matches('/')
                 .to_string(),
-            credentials_dir: file.credentials_dir.unwrap_or_else(|| {
-                xdg_dir("XDG_STATE_HOME", ".local/state").join("claude-router/credentials")
-            }),
+            credentials_dir: file.credentials_dir.unwrap_or_else(default_credentials_dir),
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
         })
     }
 
     pub fn provider_for_model(&self, real_model: &str) -> Option<usize> {
-        self.providers.iter().position(|p| p.models.iter().any(|m| m == real_model))
+        self.providers.iter().position(|p| p.models.iter().any(|m| m.id == real_model))
     }
 }
 
@@ -101,15 +134,24 @@ fn check_unique_models(providers: &[ProviderConfig]) -> Result<(), String> {
     let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
     for provider in providers {
         for model in &provider.models {
-            if let Some(other) = seen.insert(model, &provider.name) {
+            if let Some(other) = seen.insert(&model.id, &provider.name) {
                 return Err(format!(
-                    "model '{model}' is listed by both '{other}' and '{}'; model IDs must be unique across providers",
-                    provider.name
+                    "model '{}' is listed by both '{other}' and '{}'; model IDs must be unique across providers",
+                    model.id, provider.name
                 ));
             }
         }
     }
     Ok(())
+}
+
+/// Under systemd, StateDirectory= is the only writable home for runtime-set
+/// credentials (DynamicUser + ProtectHome); interactively it's XDG state.
+fn default_credentials_dir() -> PathBuf {
+    match std::env::var_os("STATE_DIRECTORY") {
+        Some(dir) => PathBuf::from(dir).join("credentials"),
+        None => xdg_dir("XDG_STATE_HOME", ".local/state").join("claude-router/credentials"),
+    }
 }
 
 fn xdg_dir(var: &str, home_fallback: &str) -> PathBuf {
@@ -119,38 +161,42 @@ fn xdg_dir(var: &str, home_fallback: &str) -> PathBuf {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
 
-    fn parse(text: &str) -> FileConfig {
-        toml::from_str(text).unwrap()
+    pub fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures").join(name)
     }
 
     #[test]
-    fn parses_multi_provider_config() {
-        let file = parse(
-            r#"
-            listen = "127.0.0.1:9999"
-
-            [providers.glm]
-            base_url = "https://api.z.ai/api/paas/v4"
-            models = ["glm-4.7", "glm-4.5-air"]
-
-            [providers.deepseek]
-            base_url = "https://api.deepseek.com/v1/"
-            models = ["deepseek-chat"]
-            "#,
-        );
-        assert_eq!(file.providers.len(), 2);
-        assert_eq!(file.providers["glm"].models.len(), 2);
+    fn loads_multi_provider_config_file() {
+        let config = Config::load(Some(fixture("providers.toml"))).unwrap();
+        assert_eq!(config.providers.len(), 2);
+        let alpha = &config.providers[0];
+        assert_eq!(alpha.name, "alpha");
+        assert_eq!(alpha.base_url, "http://alpha.example/v1");
+        assert_eq!(alpha.api, ApiFormat::Openai);
+        assert_eq!(alpha.models.len(), 2);
+        let beta = &config.providers[1];
+        assert_eq!(beta.base_url, "http://beta.example/v1");
+        assert_eq!(beta.api, ApiFormat::Anthropic);
+        assert_eq!(beta.models[0].id, "beta-model");
+        assert_eq!(beta.models[0].display_name.as_deref(), Some("Beta Model Pro"));
+        assert_eq!(config.provider_for_model("beta-model"), Some(1));
+        assert_eq!(config.provider_for_model("unlisted"), None);
     }
 
     #[test]
-    fn duplicate_models_across_providers_rejected() {
-        let providers = vec![
-            ProviderConfig { name: "a".into(), base_url: "x".into(), models: vec!["m".into()] },
-            ProviderConfig { name: "b".into(), base_url: "y".into(), models: vec!["m".into()] },
-        ];
-        assert!(check_unique_models(&providers).is_err());
+    fn duplicate_model_ids_across_providers_rejected() {
+        let err = match Config::load(Some(fixture("duplicate-models.toml"))) {
+            Err(err) => err,
+            Ok(_) => panic!("duplicate model ids must be rejected"),
+        };
+        assert!(err.contains("shared-model"), "{err}");
+    }
+
+    #[test]
+    fn explicitly_named_missing_config_is_an_error() {
+        assert!(Config::load(Some(fixture("does-not-exist.toml"))).is_err());
     }
 }

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod catalog;
 pub mod config;
 pub mod credentials;
@@ -25,6 +26,8 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub config: Arc<config::Config>,
     pub credentials: Arc<credentials::CredentialStore>,
+    /// The daemon's actual bound address, reported to the TUI client.
+    pub listen: std::net::SocketAddr,
 }
 
 pub fn app(state: AppState) -> Router {
@@ -32,6 +35,7 @@ pub fn app(state: AppState) -> Router {
         .route("/v1/models", get(catalog::models))
         .route("/v1/messages", post(messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
+        .merge(admin::routes())
         .fallback(fallback)
         .with_state(state)
 }

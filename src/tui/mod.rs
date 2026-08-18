@@ -1,20 +1,19 @@
-//! Console mode: launching `claude-router` from a terminal opens this TUI
-//! next to the running server. It shows configured providers and their
-//! credential status, and can set (masked input) or clear stored credentials.
-//! Credential files are read per-request, so changes apply immediately.
+//! Console mode: `claude-router` from a terminal opens this TUI, a pure
+//! client of the already-running daemon's `/__router` admin API. It never
+//! listens itself. Credentials set here are stored by the daemon and apply
+//! to the next request immediately; pasted keys are masked (prefix + `****`).
 
+pub mod client;
 mod ui;
 
 use std::io;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::crossterm::{execute, terminal};
 
 use crate::config::Config;
-use crate::credentials::{CredentialStore, Source};
+use client::{Client, Status};
 
 pub enum Mode {
     List,
@@ -23,17 +22,26 @@ pub enum Mode {
 }
 
 pub struct App {
-    pub config: Arc<Config>,
-    pub credentials: Arc<CredentialStore>,
-    pub listen: SocketAddr,
+    pub daemon: Client,
+    pub snapshot: Result<Status, String>,
     pub selected: usize,
     pub mode: Mode,
     pub status: Option<String>,
 }
 
 impl App {
-    fn provider_name(&self) -> Option<&str> {
-        self.config.providers.get(self.selected).map(|p| p.name.as_str())
+    fn providers(&self) -> &[client::Provider] {
+        self.snapshot.as_ref().map(|s| s.providers.as_slice()).unwrap_or(&[])
+    }
+
+    fn selected_provider(&self) -> Option<&client::Provider> {
+        self.providers().get(self.selected)
+    }
+
+    fn refresh(&mut self) {
+        self.snapshot = self.daemon.status();
+        let count = self.providers().len();
+        self.selected = self.selected.min(count.saturating_sub(1));
     }
 }
 
@@ -51,11 +59,10 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run(
-    config: Arc<Config>,
-    credentials: Arc<CredentialStore>,
-    listen: SocketAddr,
-) -> io::Result<()> {
+pub fn run(config: &Config) -> io::Result<()> {
+    let daemon = Client::new(config.listen);
+    let snapshot = daemon.status();
+
     terminal::enable_raw_mode()?;
     let _guard = TerminalGuard;
     execute!(
@@ -65,11 +72,18 @@ pub fn run(
     )?;
     let mut term = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App { config, credentials, listen, selected: 0, mode: Mode::List, status: None };
+    let mut app = App { daemon, snapshot, selected: 0, mode: Mode::List, status: None };
+    let mut ticks: u32 = 0;
 
     loop {
         term.draw(|frame| ui::draw(frame, &app))?;
-        if !event::poll(Duration::from_millis(250))? {
+        if !event::poll(Duration::from_millis(500))? {
+            // Pick up daemon-side changes (and reconnects) in the background,
+            // but never mid-entry: a refresh must not eat pasted input.
+            ticks += 1;
+            if ticks.is_multiple_of(4) && matches!(app.mode, Mode::List) {
+                app.refresh();
+            }
             continue;
         }
         match event::read()? {
@@ -89,7 +103,7 @@ pub fn run(
     }
 }
 
-/// Returns true to quit.
+/// Returns true to quit (the daemon keeps running).
 fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
     if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
         return true;
@@ -104,15 +118,17 @@ fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
                 }
                 KeyCode::Enter => {
                     let key = input.trim().to_string();
-                    let name = app.provider_name().unwrap_or_default().to_string();
+                    let name =
+                        app.selected_provider().map(|p| p.name.clone()).unwrap_or_default();
                     app.mode = Mode::List;
                     if key.is_empty() {
                         app.status = Some("empty input; credential unchanged".into());
                     } else {
-                        app.status = Some(match app.credentials.set(&name, &key) {
+                        app.status = Some(match app.daemon.set_credential(&name, &key) {
                             Ok(()) => format!("credential for '{name}' saved"),
                             Err(err) => format!("failed to save credential: {err}"),
                         });
+                        app.refresh();
                     }
                 }
                 KeyCode::Char(c) => input.push(c),
@@ -122,11 +138,12 @@ fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
         }
         Mode::ConfirmClear => {
             if let KeyCode::Char('y') | KeyCode::Char('Y') = code {
-                let name = app.provider_name().unwrap_or_default().to_string();
-                app.status = Some(match app.credentials.clear(&name) {
+                let name = app.selected_provider().map(|p| p.name.clone()).unwrap_or_default();
+                app.status = Some(match app.daemon.clear_credential(&name) {
                     Ok(()) => format!("credential for '{name}' cleared"),
                     Err(err) => format!("failed to clear credential: {err}"),
                 });
+                app.refresh();
             }
             app.mode = Mode::List;
             false
@@ -135,9 +152,13 @@ fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
 }
 
 fn on_list_key(app: &mut App, code: KeyCode) -> bool {
-    let count = app.config.providers.len();
+    let count = app.providers().len();
     match code {
         KeyCode::Char('q') | KeyCode::Esc => return true,
+        KeyCode::Char('r') => {
+            app.refresh();
+            app.status = None;
+        }
         KeyCode::Up | KeyCode::Char('k') if count > 0 => {
             app.selected = app.selected.checked_sub(1).unwrap_or(count - 1);
         }
@@ -149,19 +170,20 @@ fn on_list_key(app: &mut App, code: KeyCode) -> bool {
             app.status = None;
         }
         KeyCode::Char('c') if count > 0 => {
-            let name = app.provider_name().unwrap_or_default();
-            match app.credentials.source(name) {
-                Source::File => {
+            let credential = app.selected_provider().map(|p| p.credential.clone());
+            match credential {
+                Some(c) if c.can_clear => {
                     app.mode = Mode::ConfirmClear;
                     app.status = None;
                 }
-                Source::Unset => app.status = Some("no stored credential to clear".into()),
-                source => {
+                Some(c) if !c.set => app.status = Some("no stored credential to clear".into()),
+                Some(c) => {
                     app.status = Some(format!(
                         "credential comes from the {}; it cannot be cleared here",
-                        source.label()
+                        c.source
                     ));
                 }
+                None => {}
             }
         }
         _ => {}

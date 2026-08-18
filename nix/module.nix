@@ -10,7 +10,8 @@ let
     anthropic_upstream = cfg.anthropicUpstream;
     providers = lib.mapAttrs (_: p: {
       base_url = p.baseUrl;
-      models = p.models;
+      api = p.api;
+      models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
     }) cfg.providers;
   };
 
@@ -59,15 +60,40 @@ in
         options = {
           baseUrl = lib.mkOption {
             type = lib.types.str;
-            example = "https://api.z.ai/api/paas/v4";
-            description = "OpenAI-compatible base URL of the provider.";
+            example = "https://api.deepseek.com/anthropic";
+            description = "Provider API base URL.";
+          };
+
+          api = lib.mkOption {
+            type = lib.types.enum [ "openai" "anthropic" ];
+            default = "openai";
+            description = ''
+              API dialect the provider speaks. "anthropic" endpoints get
+              near-passthrough (model rewrite only); "openai" endpoints go
+              through the Messages <-> chat-completions translator.
+            '';
           };
 
           models = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
+            type = lib.types.listOf (
+              lib.types.either lib.types.str (
+                lib.types.submodule {
+                  options = {
+                    id = lib.mkOption {
+                      type = lib.types.str;
+                      description = "Upstream model ID sent to the provider.";
+                    };
+                    name = lib.mkOption {
+                      type = lib.types.str;
+                      description = "Display name shown in Claude Code's model switcher.";
+                    };
+                  };
+                }
+              )
+            );
             default = [ ];
-            example = [ "glm-4.7" ];
-            description = "Upstream model IDs to expose.";
+            example = [ { id = "some-model-id"; name = "Some Model Pro"; } ];
+            description = "Upstream models to expose: bare IDs or { id, name }.";
           };
 
           apiKeyFile = lib.mkOption {
@@ -98,8 +124,10 @@ in
       requires = [ "claude-router.socket" ];
       after = [ "network.target" ];
       serviceConfig = {
-        ExecStart = "${lib.getExe cfg.package} --headless --config ${configFile}";
+        ExecStart = "${lib.getExe cfg.package} --daemon --config ${configFile}";
         DynamicUser = true;
+        # Writable home for credentials set at runtime through the admin API.
+        StateDirectory = "claude-router";
         LoadCredential =
           lib.mapAttrsToList (name: p: "${name}:${p.apiKeyFile}") providersWithKey;
         NoNewPrivileges = true;

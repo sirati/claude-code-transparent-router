@@ -1,0 +1,10 @@
+listen = "127.0.0.1:9999"
+
+[providers.alpha]
+base_url = "http://alpha.example/v1"
+models = ["alpha-model", "alpha-model-mini"]
+
+[providers.beta]
+base_url = "http://beta.example/v1/"
+api = "anthropic"
+models = [{ id = "beta-model", name = "Beta Model Pro" }]

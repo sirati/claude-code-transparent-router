@@ -4,7 +4,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Row, Table};
 use ratatui::Frame;
 
-use crate::credentials::{mask, Source};
+use crate::credentials::mask;
 
 use super::{App, Mode};
 
@@ -23,48 +23,67 @@ pub fn draw(frame: &mut Frame, app: &App) {
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let config_line = match &app.config.config_path {
-        Some(path) => format!("config: {}", path.display()),
-        None => "config: (defaults; no config file found)".to_string(),
-    };
-    let text = vec![
-        Line::from(vec![
+    let daemon_line = match &app.snapshot {
+        Ok(status) => Line::from(vec![
             Span::styled(
                 "claude-router",
                 Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("  listening on http://{}", app.listen)),
+            Span::raw(format!("  daemon at http://{}", status.listen)),
+            Span::styled("  connected", Style::default().fg(Color::Green)),
         ]),
-        Line::from(config_line),
-    ];
+        Err(_) => Line::from(vec![
+            Span::styled(
+                "claude-router",
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  disconnected", Style::default().fg(Color::Red)),
+        ]),
+    };
+    let config_line = match app.snapshot.as_ref().ok().and_then(|s| s.config_path.as_deref()) {
+        Some(path) => format!("daemon config: {path}"),
+        None => "daemon config: (defaults)".to_string(),
+    };
     frame.render_widget(
-        Paragraph::new(text).block(Block::default().borders(Borders::BOTTOM)),
+        Paragraph::new(vec![daemon_line, Line::from(config_line)])
+            .block(Block::default().borders(Borders::BOTTOM)),
         area,
     );
 }
 
 fn draw_providers(frame: &mut Frame, app: &App, area: Rect) {
-    if app.config.providers.is_empty() {
+    let providers = match &app.snapshot {
+        Ok(status) => &status.providers,
+        Err(err) => {
+            frame.render_widget(
+                Paragraph::new(format!("{err}\n\npress [r] to retry"))
+                    .style(Style::default().fg(Color::Red)),
+                area,
+            );
+            return;
+        }
+    };
+    if providers.is_empty() {
         frame.render_widget(
-            Paragraph::new("no providers configured — the router is pure passthrough")
+            Paragraph::new("no providers configured — the daemon is pure passthrough")
                 .style(Style::default().fg(Color::DarkGray)),
             area,
         );
         return;
     }
 
-    let rows = app.config.providers.iter().enumerate().map(|(i, provider)| {
-        let source = app.credentials.source(&provider.name);
-        let credential = match source {
-            Source::Unset => Span::styled("not set", Style::default().fg(Color::Red)),
-            _ => Span::styled(
+    let rows = providers.iter().enumerate().map(|(i, provider)| {
+        let credential = if provider.credential.set {
+            Span::styled(
                 format!(
                     "{} ({})",
-                    app.credentials.preview(&provider.name).unwrap_or_default(),
-                    source.label(),
+                    provider.credential.preview.as_deref().unwrap_or_default(),
+                    provider.credential.source,
                 ),
                 Style::default().fg(Color::Green),
-            ),
+            )
+        } else {
+            Span::styled("not set", Style::default().fg(Color::Red))
         };
         let style = if i == app.selected {
             Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD)
@@ -92,8 +111,7 @@ fn draw_providers(frame: &mut Frame, app: &App, area: Rect) {
     .header(
         Row::new(["provider", "base url", "models", "credential"])
             .style(Style::default().add_modifier(Modifier::UNDERLINED)),
-    )
-    .block(Block::default().borders(Borders::NONE));
+    );
     frame.render_widget(table, area);
 }
 
@@ -102,40 +120,39 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
         Mode::ConfirmClear => Line::from(Span::styled(
             format!(
                 "clear credential for '{}'? [y]es / [n]o",
-                app.config.providers.get(app.selected).map(|p| p.name.as_str()).unwrap_or("?")
+                app.selected_provider().map(|p| p.name.as_str()).unwrap_or("?")
             ),
             Style::default().fg(Color::Yellow),
         )),
         _ => match &app.status {
-            Some(status) => Line::from(Span::styled(status.clone(), Style::default().fg(Color::Yellow))),
+            Some(status) => {
+                Line::from(Span::styled(status.clone(), Style::default().fg(Color::Yellow)))
+            }
             None => Line::from(Span::styled(
-                "↑/↓ select   [s]et credential   [c]lear credential   [q]uit",
+                "↑/↓ select   [s]et credential   [c]lear credential   [r]efresh   [q]uit",
                 Style::default().fg(Color::DarkGray),
             )),
         },
     };
-    frame.render_widget(
-        Paragraph::new(line).block(Block::default().borders(Borders::TOP)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(line).block(Block::default().borders(Borders::TOP)), area);
 }
 
 /// Masked entry, Claude Code style: a short visible prefix, the rest `*`s.
 fn draw_input_popup(frame: &mut Frame, app: &App, input: &str) {
     let area = centered(frame.area(), 60, 5);
-    let name = app.config.providers.get(app.selected).map(|p| p.name.as_str()).unwrap_or("?");
-    let shown = if input.is_empty() { String::from("(paste or type, Enter to save, Esc to cancel)") } else { mask(input) };
-    let style = if input.is_empty() {
-        Style::default().fg(Color::DarkGray)
+    let name = app.selected_provider().map(|p| p.name.as_str()).unwrap_or("?");
+    let (shown, style) = if input.is_empty() {
+        (
+            String::from("(paste or type, Enter to save, Esc to cancel)"),
+            Style::default().fg(Color::DarkGray),
+        )
     } else {
-        Style::default()
+        (mask(input), Style::default())
     };
     frame.render_widget(Clear, area);
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(shown, style))).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" set credential for '{name}' ")),
+            Block::default().borders(Borders::ALL).title(format!(" set credential for '{name}' ")),
         ),
         area,
     );

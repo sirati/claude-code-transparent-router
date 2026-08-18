@@ -39,35 +39,20 @@ pub fn route(config: &Config, body: &[u8]) -> Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, ProviderConfig};
+    use crate::config::{tests::fixture, Config};
 
+    /// Tests exercise the real config path: providers come from the same TOML
+    /// loading a deployment uses, never from structs built in code.
     fn config() -> Config {
-        Config {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            anthropic_base: "https://api.anthropic.com".into(),
-            credentials_dir: std::env::temp_dir(),
-            providers: vec![
-                ProviderConfig {
-                    name: "glm".into(),
-                    base_url: "https://api.z.ai/api/paas/v4".into(),
-                    models: vec!["glm-4.7".into()],
-                },
-                ProviderConfig {
-                    name: "deepseek".into(),
-                    base_url: "https://api.deepseek.com/v1".into(),
-                    models: vec!["deepseek-chat".into()],
-                },
-            ],
-            config_path: None,
-        }
+        Config::load(Some(fixture("providers.toml"))).unwrap()
     }
 
     #[test]
     fn aliased_models_route_to_their_provider() {
-        match route(&config(), br#"{"model":"anthropic/deepseek-chat"}"#) {
+        match route(&config(), br#"{"model":"anthropic/beta-model"}"#) {
             Backend::Provider { provider, real_model } => {
                 assert_eq!(provider, 1);
-                assert_eq!(real_model, "deepseek-chat");
+                assert_eq!(real_model, "beta-model");
             }
             _ => panic!("expected provider"),
         }
