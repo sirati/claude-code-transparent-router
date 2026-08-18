@@ -1,21 +1,34 @@
 # claude-code-transparent-router
 
-Mix providers inside a single Claude Code session. Keep Claude as the model
-you talk to and hand work to subagents running on DeepSeek or GPT — or make
-one of those the main model instead. It is a loopback HTTP router: point
-Claude Code at it instead of `api.anthropic.com`.
+Mix providers inside a single Claude Code session: keep Claude as the model
+you talk to and hand work to subagents running on DeepSeek or GPT, or make
+one of those the main model instead. Anthropic models keep working exactly as
+before.
+
+A loopback HTTP router — point Claude Code at it instead of
+`api.anthropic.com`.
 
 ## Features
 
-- **Mix providers in one session.** Subagents run on whichever provider you
-  give them, so a conversation can delegate to DeepSeek or GPT and carry on.
-- **Start a subagent on another provider directly.** Each agent names its own
-  model and reasoning effort.
-- Use a ChatGPT subscription instead of metered API billing.
-- Serve several users from one daemon, each with their own providers and
-  credentials.
-- Anthropic models keep working unchanged: same bytes, same streaming, same
-  rate-limit handling.
+- Run subagents on other providers, started straight from the conversation.
+- Use a ChatGPT subscription for GPT instead of metered API billing.
+- Add any Anthropic- or OpenAI-compatible endpoint as a provider.
+
+## Agents
+
+An agent names its own model and effort, which is what makes a session mixed.
+Claude Code shows one custom model in `/model`; agents have no such limit.
+
+```markdown
+---
+name: flash
+description: Cheap, fast helper for mechanical edits.
+model: deepseek/flash
+effort: low
+---
+```
+
+On NixOS these are generated from your configuration.
 
 ## Presets
 
@@ -31,7 +44,7 @@ version.
 
 ## Provider APIs
 
-Any provider can also be configured by hand, in one of three dialects.
+Providers without a preset are configured by hand, in one of three dialects.
 
 | `api` | Endpoint | Used by |
 | --- | --- | --- |
@@ -48,15 +61,12 @@ Any provider can also be configured by hand, in one of three dialects.
 
 ## Configuration
 
-`--config <path>`, `$CLAUDE_ROUTER_CONFIG`, or
-`~/.config/claude-router/config.toml`. Credentials never go here;
-`claude-router` opens a TUI to manage them per user.
+On NixOS through the module options; elsewhere
+`~/.config/claude-router/config.toml`, which the NixOS module generates for
+you. Credentials are set with `claude-router`, never in the configuration.
 
 ```toml
-listen = "127.0.0.1:8787"      # optional
 picker_model = "deepseek/pro"  # fills Claude Code's one custom /model entry
-restrict_to_owner = true       # only this user may connect
-idle_timeout_secs = 300        # exit when unused; 0 to stay resident
 
 [providers.deepseek]
 preset = "deepseek"
@@ -67,25 +77,8 @@ api = "openai"
 models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
 ```
 
-Select a model as `sol`, `codex/sol`, or `gpt-5.6-sol`. Names must be unique
-across providers, checked at startup.
-
-Subagents are what make a session mixed: each names a model and, optionally,
-an effort level. Claude Code shows only one custom model in `/model`
-(`picker_model` chooses it), but an agent's frontmatter has no such limit.
-
-```markdown
----
-name: flash
-description: Cheap, fast helper for mechanical edits.
-model: deepseek/flash
-effort: low
----
-```
-
-On NixOS these are generated from your configuration, including into several
-Claude Code directories at once. Reasoning effort is translated to each
-provider's own field and levels.
+Name a model as `sol`, `codex/sol`, or `gpt-5.6-sol`; names must be unique
+across providers.
 
 ## Development
 

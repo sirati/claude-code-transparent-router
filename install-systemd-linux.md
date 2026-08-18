@@ -25,16 +25,9 @@ seconds.
 | Units in | `~/.config/systemd/user` | `/etc/systemd/system` |
 | Users per machine | one per port | any number, one port |
 
-The two are equally secure. In both, the port is loopback-only, credentials
-live in one user's own files, and the daemon identifies its caller by the uid
-the kernel reports for the connection rather than anything the client claims.
-The system-wide unit additionally runs as `DynamicUser` with
-`ProtectHome=read-only`, so it reads each user's config and credentials and
-can never write to them.
-
-Prefer system-wide on a machine with more than one user: a user service per
-person would need a distinct port each, since the first to start takes 8787
-and the rest fail to bind.
+System-wide is just as secure — every user's credentials stay in their own
+files, and the daemon reads them by the uid the kernel reports for the
+connection — and avoids giving each user a separate port.
 
 Both use the same socket unit:
 
@@ -94,9 +87,9 @@ RestrictNamespaces=true
 CapabilityBoundingSet=
 ```
 
-`--user-config` is what resolves each connecting uid to its home. Leave
-`restrict_to_owner` out of the config here — the daemon's own uid is not the
-users'; to limit who may connect, use `allowed_uids = [1000, 1001]`.
+`--user-config` resolves each connecting uid to its home. Leave
+`restrict_to_owner` out of the config here; to limit who may connect, use
+`allowed_uids = [1000, 1001]`.
 
 ## 3. Configure providers
 
@@ -168,10 +161,7 @@ exec claude "$@"
 
 ## Agents
 
-Agents are what mix providers inside a session: each names its own model and
-effort, so a conversation can delegate to another provider and carry on.
-Claude Code shows only one custom model in `/model` (`picker_model` chooses
-it); agents have no such limit. `~/.claude/agents/flash.md`:
+Each agent names a model and effort — `~/.claude/agents/flash.md`:
 
 ```markdown
 ---
@@ -185,8 +175,8 @@ tools: Read, Grep, Glob
 You make small mechanical changes exactly as asked.
 ```
 
-Models can be named by full ID, by shorthand, or qualified: `sol`,
-`codex/sol`, `gpt-5.6-sol`.
+Name a model by full ID, by shorthand, or qualified: `sol`, `codex/sol`,
+`gpt-5.6-sol`.
 
 ## Troubleshooting
 
