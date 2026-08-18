@@ -20,6 +20,27 @@ pub fn routes() -> Router<AppState> {
         .route("/__router/providers", get(providers))
         .route("/__router/picker", get(picker))
         .route("/__router/credentials/{provider}", put(set_credential).delete(clear_credential))
+        .route("/__router/oauth/{provider}", put(set_tokens))
+}
+
+/// Hand a completed login to the daemon. The browser flow has to run in the
+/// user's session, but the daemon may be a different user with its own state
+/// directory (systemd `DynamicUser`), so the CLI posts the result here rather
+/// than writing to a store the daemon never reads.
+async fn set_tokens(
+    State(state): State<AppState>,
+    Path(provider): Path<String>,
+    Json(tokens): Json<crate::oauth::Tokens>,
+) -> Response {
+    if !is_oauth(&state, &provider) {
+        return (StatusCode::NOT_FOUND, format!("no OAuth provider named '{provider}'"))
+            .into_response();
+    }
+    match state.tokens.save(&provider, &tokens) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to store login: {err}"))
+            .into_response(),
+    }
 }
 
 /// Plain-text picker rows (`<alias>\t<display name>` per line) for shell

@@ -66,10 +66,22 @@
       # outside the NixOS module: pkgs.callPackage flake.lib.wrapper { … }.
       lib.wrapper = ./nix/wrapper.nix;
 
+      # System-wide service: for multi-user hosts, or credentials that come
+      # from systemd LoadCredential.
       nixosModules.default =
         { pkgs, lib, ... }:
         {
           imports = [ ./nix/module.nix ];
+          services.claude-router.package =
+            lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.claude-code-transparent-router;
+        };
+
+      # User service: the right scope on a workstation, where the credentials
+      # and the Claude Code session belong to one person.
+      homeManagerModules.default =
+        { pkgs, lib, ... }:
+        {
+          imports = [ ./nix/home-manager.nix ];
           services.claude-router.package =
             lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.claude-code-transparent-router;
         };

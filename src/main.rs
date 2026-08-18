@@ -122,7 +122,13 @@ async fn serve(config: Arc<config::Config>) {
         },
     };
     let listen = listener.local_addr().expect("local addr");
-    tracing::info!(addr = %listen, "claude-router daemon listening");
+    let allowed = config.allowed_uids.clone();
+    if allowed.is_empty() {
+        tracing::info!(addr = %listen, "claude-router daemon listening (any local user)");
+    } else {
+        tracing::info!(addr = %listen, uids = ?allowed, "claude-router daemon listening");
+    }
+    let listener = claude_code_transparent_router::peer::UidFiltered::new(listener, allowed);
 
     let credentials = Arc::new(CredentialStore::new(config.credentials_dir.clone()));
     let tokens = Arc::new(claude_code_transparent_router::oauth::TokenStore::new(&config.credentials_dir));
@@ -178,10 +184,33 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
     println!("If it does not open, visit:\n\n{}\n", started.authorize_url);
     claude_code_transparent_router::oauth::login::open_browser(&started.authorize_url);
 
-    match started.complete(&client, oauth_config).await {
-        Ok(session) => match tokens.save(provider_name, &session) {
+    let session = match started.complete(&client, oauth_config).await {
+        Ok(session) => session,
+        Err(err) => {
+            eprintln!("login failed: {err}");
+            return 1;
+        }
+    };
+
+    // Hand the session to the running daemon: under a system service it runs
+    // as a different user with its own state directory, and would never see a
+    // file written here. Falling back to the local store covers the case
+    // where the daemon is not up yet.
+    let daemon = claude_code_transparent_router::tui::client::Client::new(config.listen);
+    match daemon.set_tokens(provider_name, &session) {
+        Ok(()) => {
+            println!("Signed in to '{provider_name}' ({}).", session.preview());
+            0
+        }
+        Err(daemon_err) => match tokens.save(provider_name, &session) {
             Ok(()) => {
-                println!("Signed in to '{provider_name}' ({}).", session.preview());
+                println!(
+                    "Signed in to '{provider_name}' ({}), stored locally.\n\
+                     The running daemon did not accept it ({daemon_err}); \
+                     it will pick this up if it reads {}.",
+                    session.preview(),
+                    config.credentials_dir.display(),
+                );
                 0
             }
             Err(err) => {
@@ -189,10 +218,6 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
                 1
             }
         },
-        Err(err) => {
-            eprintln!("login failed: {err}");
-            1
-        }
     }
 }
 

@@ -69,6 +69,21 @@ impl Client {
     pub fn clear_credential(&self, provider: &str) -> Result<(), String> {
         check(self.http.delete(format!("{}/__router/credentials/{provider}", self.base)).send())
     }
+
+    /// Hand a completed login to the daemon, which owns the state directory
+    /// the request path actually reads from.
+    pub fn set_tokens(
+        &self,
+        provider: &str,
+        tokens: &crate::oauth::Tokens,
+    ) -> Result<(), String> {
+        check(
+            self.http
+                .put(format!("{}/__router/oauth/{provider}", self.base))
+                .json(tokens)
+                .send(),
+        )
+    }
 }
 
 fn check(result: reqwest::Result<reqwest::blocking::Response>) -> Result<(), String> {

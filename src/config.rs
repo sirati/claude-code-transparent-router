@@ -11,6 +11,15 @@ struct FileConfig {
     listen: Option<SocketAddr>,
     anthropic_upstream: Option<String>,
     credentials_dir: Option<PathBuf>,
+    /// Accept connections only from the user the daemon runs as. Right for a
+    /// user service; wrong for a system service whose clients are other
+    /// users, which is why it is opt-in.
+    #[serde(default)]
+    restrict_to_owner: bool,
+    /// Additional uids allowed to connect. Empty and `restrict_to_owner`
+    /// unset means any local user may connect, as any loopback port allows.
+    #[serde(default)]
+    allowed_uids: Vec<u32>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -130,6 +139,8 @@ pub struct Config {
     pub anthropic_base: String,
     /// Where the TUI-managed credential files live (one file per provider).
     pub credentials_dir: PathBuf,
+    /// Uids permitted to connect; empty means unrestricted.
+    pub allowed_uids: Vec<u32>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -217,6 +228,14 @@ impl Config {
                 .trim_end_matches('/')
                 .to_string(),
             credentials_dir: file.credentials_dir.unwrap_or_else(default_credentials_dir),
+            allowed_uids: {
+                let mut uids = file.allowed_uids;
+                if file.restrict_to_owner {
+                    // Without our own uid the daemon would lock itself out.
+                    uids.extend(crate::peer::own_uid());
+                }
+                uids
+            },
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
         })

@@ -6,6 +6,7 @@ pub mod effort;
 pub mod headers;
 pub mod oauth;
 pub mod passthrough;
+pub mod peer;
 pub mod presets;
 pub mod providers;
 pub mod route;

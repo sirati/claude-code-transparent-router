@@ -8,6 +8,7 @@ let
   configFile = settingsFormat.generate "claude-router.toml" {
     listen = "127.0.0.1:${toString cfg.port}";
     anthropic_upstream = cfg.anthropicUpstream;
+    allowed_uids = cfg.allowedUids;
     providers = lib.mapAttrs (_: p:
       lib.optionalAttrs (p.preset != null) { preset = p.preset; }
       // lib.optionalAttrs (p.baseUrl != null) { base_url = p.baseUrl; }
@@ -90,6 +91,17 @@ in
       description = "Loopback port the router listens on.";
     };
 
+    allowedUids = lib.mkOption {
+      type = lib.types.listOf lib.types.int;
+      default = [ ];
+      example = [ 1000 ];
+      description = ''
+        Uids allowed to connect. Empty means any local user may, as with any
+        loopback port. The daemon runs as a DynamicUser here, so its own uid
+        is not a useful default — list the humans who should reach it.
+      '';
+    };
+
     anthropicUpstream = lib.mkOption {
       type = lib.types.str;
       default = "https://api.anthropic.com";
@@ -124,7 +136,7 @@ in
           };
 
           api = lib.mkOption {
-            type = lib.types.nullOr (lib.types.enum [ "openai" "anthropic" ]);
+            type = lib.types.nullOr (lib.types.enum [ "openai" "anthropic" "responses" ]);
             default = null;
             description = ''
               API dialect the provider speaks. "anthropic" endpoints get
