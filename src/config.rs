@@ -25,6 +25,59 @@ struct FileProvider {
     models: Vec<FileModel>,
     #[serde(default)]
     effort: Option<EffortConfig>,
+    #[serde(default)]
+    oauth: Option<OauthConfig>,
+    /// Static headers added to every request to this provider.
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+    /// Fields merged into the outgoing request body, for provider-specific
+    /// knobs the translators don't model.
+    #[serde(default)]
+    request_extra: BTreeMap<String, toml::Value>,
+}
+
+/// A provider whose credential is an OAuth token rather than an API key.
+/// Every endpoint, identifier and parameter comes from configuration, so
+/// supporting another OAuth provider is a preset file, not a code change.
+#[derive(Deserialize, Debug, Clone)]
+pub struct OauthConfig {
+    pub issuer: String,
+    pub client_id: String,
+    pub scope: String,
+    /// Loopback port for the redirect. The provider's registered redirect
+    /// URI has to match, so this is rarely free to choose.
+    pub callback_port: u16,
+    #[serde(default = "default_callback_path")]
+    pub callback_path: String,
+    /// Extra query parameters on the authorize URL.
+    #[serde(default)]
+    pub authorize_extra: BTreeMap<String, String>,
+    /// `form` (RFC 6749) or `json`, as the provider's refresh endpoint wants.
+    #[serde(default = "default_refresh_format")]
+    pub refresh_format: RefreshFormat,
+    /// Dotted path of the id_token claim holding the account identifier,
+    /// e.g. `https://api.openai.com/auth.chatgpt_account_id`. Claim names
+    /// containing dots are matched before the path is split.
+    #[serde(default)]
+    pub account_id_claim: Option<String>,
+    /// Header the account identifier is sent in.
+    #[serde(default)]
+    pub account_header: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RefreshFormat {
+    Form,
+    Json,
+}
+
+fn default_callback_path() -> String {
+    "/auth/callback".into()
+}
+
+fn default_refresh_format() -> RefreshFormat {
+    RefreshFormat::Form
 }
 
 /// How a provider expresses reasoning effort. Claude Code sends Anthropic's
@@ -90,6 +143,9 @@ pub struct ProviderConfig {
     /// Real upstream models, served in /v1/models as `anthropic/<id>`.
     pub models: Vec<Model>,
     pub effort: Option<EffortConfig>,
+    pub oauth: Option<OauthConfig>,
+    pub headers: BTreeMap<String, String>,
+    pub request_extra: BTreeMap<String, toml::Value>,
 }
 
 pub struct Model {
@@ -138,6 +194,9 @@ impl Config {
                 base_url: p.base_url.trim_end_matches('/').to_string(),
                 api: p.api.unwrap_or(ApiFormat::Openai),
                 effort: p.effort,
+                oauth: p.oauth,
+                headers: p.headers,
+                request_extra: p.request_extra,
                 models: p
                     .models
                     .into_iter()

@@ -11,18 +11,29 @@ use tokio::net::TcpListener;
 struct Args {
     config: Option<PathBuf>,
     daemon: bool,
+    /// `login <provider>` / `logout <provider>`.
+    command: Option<(String, String)>,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { config: None, daemon: false };
+    let mut args = Args { config: None, daemon: false, command: None };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--config" => args.config = argv.next().map(PathBuf::from),
             "--daemon" => args.daemon = true,
+            "login" | "logout" => match argv.next() {
+                Some(provider) => args.command = Some((arg, provider)),
+                None => {
+                    eprintln!("{arg} needs a provider name");
+                    std::process::exit(2);
+                }
+            },
             "--help" | "-h" => {
                 println!(
-                    "claude-router [--config <path>] [--daemon]\n\n\
+                    "claude-router [--config <path>] [--daemon]\n\
+                     claude-router login <provider>\n\
+                     claude-router logout <provider>\n\n\
                      From a terminal: opens the TUI that configures the running daemon.\n\
                      --daemon (or no TTY): runs the daemon itself."
                 );
@@ -46,6 +57,15 @@ fn main() {
             std::process::exit(1);
         }
     };
+
+    if let Some((command, provider)) = args.command {
+        let code = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime")
+            .block_on(run_auth_command(&config, &command, &provider));
+        std::process::exit(code);
+    }
 
     // Terminal launch = TUI client for the running daemon; it never listens.
     if !args.daemon && std::io::stdout().is_terminal() {
@@ -105,12 +125,75 @@ async fn serve(config: Arc<config::Config>) {
     tracing::info!(addr = %listen, "claude-router daemon listening");
 
     let credentials = Arc::new(CredentialStore::new(config.credentials_dir.clone()));
-    let state = AppState { client, config, credentials, listen };
+    let tokens = Arc::new(claude_code_transparent_router::oauth::TokenStore::new(&config.credentials_dir));
+    let state = AppState { client, config, credentials, tokens, listen };
 
     axum::serve(listener, app(state))
         .with_graceful_shutdown(shutdown_signal())
         .await
         .expect("serve");
+}
+
+/// `login` / `logout`: run against the token store directly, so they work
+/// whether or not the daemon is up. Returns a process exit code.
+async fn run_auth_command(config: &config::Config, command: &str, provider_name: &str) -> i32 {
+    let Some(provider) = config.providers.iter().find(|p| p.name == provider_name) else {
+        eprintln!("no provider named '{provider_name}' in the config");
+        return 1;
+    };
+    let Some(oauth_config) = provider.oauth.as_ref() else {
+        eprintln!(
+            "provider '{provider_name}' uses an API key, not a login; \
+             set its credential in the TUI instead"
+        );
+        return 1;
+    };
+    let tokens = claude_code_transparent_router::oauth::TokenStore::new(&config.credentials_dir);
+
+    if command == "logout" {
+        return match tokens.clear(provider_name) {
+            Ok(()) => {
+                println!("signed out of '{provider_name}'");
+                0
+            }
+            Err(err) => {
+                eprintln!("could not clear the '{provider_name}' login: {err}");
+                1
+            }
+        };
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .build()
+        .expect("http client");
+    let started = match claude_code_transparent_router::oauth::login::start(oauth_config).await {
+        Ok(started) => started,
+        Err(err) => {
+            eprintln!("{err}");
+            return 1;
+        }
+    };
+    println!("Opening your browser to sign in to '{provider_name}'.");
+    println!("If it does not open, visit:\n\n{}\n", started.authorize_url);
+    claude_code_transparent_router::oauth::login::open_browser(&started.authorize_url);
+
+    match started.complete(&client, oauth_config).await {
+        Ok(session) => match tokens.save(provider_name, &session) {
+            Ok(()) => {
+                println!("Signed in to '{provider_name}' ({}).", session.preview());
+                0
+            }
+            Err(err) => {
+                eprintln!("signed in, but could not save the tokens: {err}");
+                1
+            }
+        },
+        Err(err) => {
+            eprintln!("login failed: {err}");
+            1
+        }
+    }
 }
 
 async fn shutdown_signal() {

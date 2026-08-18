@@ -33,6 +33,12 @@ pub async fn messages(
     let alias = anthropic_req["model"].as_str().unwrap_or(&real_model).to_string();
     let streaming = anthropic_req["stream"].as_bool().unwrap_or(false);
     let mut outgoing = request::to_responses(&anthropic_req, &real_model, streaming);
+    // Provider-specific body knobs come from config, not from this module.
+    for (key, value) in &provider.request_extra {
+        if let Ok(value) = serde_json::to_value(value) {
+            outgoing[key.as_str()] = value;
+        }
+    }
     if let Some(level) =
         crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut outgoing)
     {

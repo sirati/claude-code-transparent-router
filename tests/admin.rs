@@ -21,6 +21,9 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
     app(AppState {
         client: reqwest::Client::new(),
         credentials: Arc::new(CredentialStore::new(config.credentials_dir.clone())),
+        tokens: Arc::new(claude_code_transparent_router::oauth::TokenStore::new(
+            &config.credentials_dir,
+        )),
         config: Arc::new(config),
         listen: "127.0.0.1:9999".parse().unwrap(),
     })

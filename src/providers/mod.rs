@@ -26,7 +26,11 @@ pub struct ProviderAuth {
 impl ProviderAuth {
     /// Bearer-token auth, the common case for API keys.
     pub fn bearer(key: &SecretKey) -> Self {
-        Self { headers: vec![("authorization".into(), format!("Bearer {}", key.expose()))] }
+        Self::bearer_token(key.expose())
+    }
+
+    pub fn bearer_token(token: &str) -> Self {
+        Self { headers: vec![("authorization".into(), format!("Bearer {token}"))] }
     }
 
     pub fn with(mut self, name: &str, value: impl Into<String>) -> Self {
@@ -58,6 +62,18 @@ pub async fn dispatch(
     if counting {
         return count_tokens(&body);
     }
+    tracing::info!(provider = provider.name, model = real_model, api = ?provider.api, "routing");
+
+    // OAuth providers authenticate with a stored token; everything else with
+    // an API key. Either way the header map is built here, from credential
+    // material only.
+    if provider.oauth.is_some() {
+        return match oauth_auth(state, provider).await {
+            Ok(auth) => forward(state, provider, auth, body, real_model).await,
+            Err(err) => proxy_error(&err),
+        };
+    }
+
     let Some(key) = state.credentials.get(&provider.name) else {
         return proxy_error(&format!(
             "provider '{name}' is configured but has no credentials set; \
@@ -67,7 +83,6 @@ pub async fn dispatch(
             env = provider.name.to_uppercase().replace('-', "_"),
         ));
     };
-    tracing::info!(provider = provider.name, model = real_model, api = ?provider.api, "routing");
     match provider.api {
         ApiFormat::Openai => {
             openai_compat::messages(&state.client, provider, key, body, real_model).await
@@ -76,10 +91,75 @@ pub async fn dispatch(
             anthropic_compat::messages(&state.client, provider, key, body, real_model).await
         }
         ApiFormat::Responses => {
-            let auth = ProviderAuth::bearer(&key);
-            responses::messages(&state.client, provider, auth, body, real_model).await
+            forward(state, provider, ProviderAuth::bearer(&key), body, real_model).await
         }
     }
+}
+
+async fn forward(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+    auth: ProviderAuth,
+    body: Bytes,
+    real_model: String,
+) -> Response {
+    let auth = provider
+        .headers
+        .iter()
+        .fold(auth, |auth, (name, value)| auth.with(name, value.clone()));
+    match provider.api {
+        ApiFormat::Responses => {
+            responses::messages(&state.client, provider, auth, body, real_model).await
+        }
+        // OAuth against the other dialects is not wired up; no configured
+        // provider needs it yet, and guessing the header shape would be worse
+        // than saying so.
+        other => proxy_error(&format!(
+            "provider '{}' uses OAuth with api = {other:?}, which this router does not support yet",
+            provider.name
+        )),
+    }
+}
+
+/// Load the provider's tokens, refreshing when they are close to expiry, and
+/// build the auth headers the provider expects.
+async fn oauth_auth(
+    state: &AppState,
+    provider: &crate::config::ProviderConfig,
+) -> Result<ProviderAuth, String> {
+    let config = provider.oauth.as_ref().expect("oauth provider");
+    let mut tokens = state.tokens.get(&provider.name).ok_or_else(|| {
+        format!(
+            "provider '{}' is not signed in; run `claude-router login {}`",
+            provider.name, provider.name
+        )
+    })?;
+
+    if tokens.needs_refresh(crate::oauth::REFRESH_WINDOW) {
+        tracing::info!(provider = provider.name, "refreshing access token");
+        let refreshed = crate::oauth::refresh(&state.client, config, &tokens.refresh_token)
+            .await
+            .map_err(|err| {
+                format!(
+                    "could not refresh the '{}' login: {err}; run `claude-router login {}`",
+                    provider.name, provider.name
+                )
+            })?;
+        // Keep the account id from login when a refresh response omits it.
+        tokens = crate::oauth::Tokens {
+            account_id: refreshed.account_id.or(tokens.account_id),
+            ..refreshed
+        };
+        if let Err(err) = state.tokens.save(&provider.name, &tokens) {
+            tracing::warn!(provider = provider.name, %err, "could not persist refreshed tokens");
+        }
+    }
+
+    let mut auth = ProviderAuth::bearer_token(&tokens.access_token);
+    if let (Some(header), Some(account_id)) = (&config.account_header, &tokens.account_id) {
+        auth = auth.with(header, account_id.clone());
+    }
+    Ok(auth)
 }
 
 /// Provider-side errors are re-shaped into Anthropic's error envelope (the

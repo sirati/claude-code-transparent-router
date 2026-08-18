@@ -4,6 +4,7 @@ pub mod config;
 pub mod credentials;
 pub mod effort;
 pub mod headers;
+pub mod oauth;
 pub mod passthrough;
 pub mod presets;
 pub mod providers;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub client: reqwest::Client,
     pub config: Arc<config::Config>,
     pub credentials: Arc<credentials::CredentialStore>,
+    pub tokens: Arc<oauth::TokenStore>,
     /// The daemon's actual bound address, reported to the TUI client.
     pub listen: std::net::SocketAddr,
 }

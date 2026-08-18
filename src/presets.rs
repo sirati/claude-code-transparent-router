@@ -8,7 +8,10 @@ use toml::Value;
 /// `preset = "<name>"` in a provider table.
 pub const FIELD: &str = "preset";
 
-const PRESETS: &[(&str, &str)] = &[("deepseek", include_str!("../presets/deepseek.toml"))];
+const PRESETS: &[(&str, &str)] = &[
+    ("codex", include_str!("../presets/codex.toml")),
+    ("deepseek", include_str!("../presets/deepseek.toml")),
+];
 
 pub fn names() -> Vec<&'static str> {
     PRESETS.iter().map(|(name, _)| *name).collect()

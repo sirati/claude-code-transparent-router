@@ -1,0 +1,43 @@
+# OpenAI Codex: the ChatGPT-subscription backend, reached with the OAuth
+# login flow published in openai/codex (Apache-2.0). Sign in with
+# `claude-router login codex`; no API key is involved.
+#
+# Consumes the signed-in account's Codex allowance. Check your plan's terms
+# before pointing another client at it.
+base_url = "https://chatgpt.com/backend-api/codex"
+api = "responses"
+models = [
+  { id = "gpt-5.6-sol", name = "GPT-5.6 Sol" },
+  { id = "gpt-5.6-terra", name = "GPT-5.6 Terra" },
+  { id = "gpt-5.6-luna", name = "GPT-5.6 Luna" },
+]
+
+[oauth]
+issuer = "https://auth.openai.com"
+client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+scope = "openid profile email offline_access api.connectors.read api.connectors.invoke"
+callback_port = 1455
+callback_path = "/auth/callback"
+refresh_format = "json"
+account_id_claim = "https://api.openai.com/auth.chatgpt_account_id"
+account_header = "ChatGPT-Account-ID"
+
+[oauth.authorize_extra]
+id_token_add_organizations = "true"
+codex_cli_simplified_flow = "true"
+originator = "codex_cli_rs"
+
+[headers]
+originator = "codex_cli_rs"
+
+[request_extra]
+store = false
+stream = true
+include = ["reasoning.encrypted_content"]
+tool_choice = "auto"
+parallel_tool_calls = true
+
+[effort]
+field = "reasoning.effort"
+default = "medium"
+map = { low = "low", medium = "medium", high = "high", xhigh = "xhigh", max = "max" }
