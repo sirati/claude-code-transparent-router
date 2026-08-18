@@ -1,0 +1,13 @@
+# A second router, alongside the normal one, whose only provider records what
+# Claude Code sends. Reach it with:
+#   CLAUDE_ROUTER_URL=http://127.0.0.1:8899 claude
+listen = "127.0.0.1:8899"
+credentials_dir = "/home/sirati/.local/share/claude-router-capture/creds"
+picker_model = "test"
+
+[providers.capture]
+base_url = "http://127.0.0.1:8131"
+# Anthropic dialect: the router rewrites the model name and forwards the rest
+# byte for byte, so the capture sees Claude Code's own request.
+api = "anthropic"
+models = [{ id = "test", name = "Capture (test)" }]
