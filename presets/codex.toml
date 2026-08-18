@@ -39,7 +39,10 @@ include = ["reasoning.encrypted_content"]
 tool_choice = "auto"
 parallel_tool_calls = true
 
+# The Responses API reads reasoning.effort, not Anthropic's
+# output_config.effort, so the field has to move -- but it accepts the same
+# level names, so no mapping is needed. No default either: each model then
+# applies its own canonical default (sol low, terra and luna medium).
 [effort]
 field = "reasoning.effort"
-default = "medium"
-map = { low = "low", medium = "medium", high = "high", xhigh = "xhigh", max = "max" }
+remove = ["output_config"]

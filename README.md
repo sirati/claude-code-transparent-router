@@ -27,8 +27,9 @@ Anthropic Messages API and that provider's own.
   a routed model in their frontmatter.
 - **Per-user credentials.** Run `claude-router` for a TUI to manage them; they
   are never shared between users and never written to the config file.
-- **Effort mapping.** Claude Code's reasoning effort is translated to each
-  provider's own field and levels.
+- **Effort translation.** Claude Code's reasoning effort is moved to each
+  provider's own field, and its levels collapsed where a provider has fewer.
+  With no level configured, the provider's canonical default applies.
 
 ## Installation
 

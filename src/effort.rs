@@ -24,10 +24,16 @@ pub fn apply(config: Option<&EffortConfig>, source: &Value, target: &mut Value) 
         }
     }
 
-    let mapped = requested
-        .and_then(|level| config.map.get(level))
-        .cloned()
-        .or_else(|| config.default.clone())?;
+    // An empty map means the provider uses Anthropic's own level names, so
+    // only the field moves. With a map, an unlisted level falls back to the
+    // default; with no default the field is left unset and the provider
+    // applies its own canonical default for that model.
+    let mapped = match (requested, config.map.is_empty()) {
+        (Some(level), true) => Some(level.to_string()),
+        (Some(level), false) => config.map.get(level).cloned(),
+        (None, _) => None,
+    }
+    .or_else(|| config.default.clone())?;
     set_path(target, &config.field, Value::String(mapped.clone()));
     Some(mapped)
 }
@@ -76,6 +82,29 @@ mod tests {
         assert_eq!(apply(Some(&config), &source, &mut body).as_deref(), Some("high"));
         assert_eq!(body["reasoning"]["effort"], "high");
         assert!(body.get("output_config").is_none());
+    }
+
+    /// A provider that shares Anthropic's level names only needs the field
+    /// to move, and then imposes no default of its own.
+    #[test]
+    fn an_empty_map_moves_the_level_unchanged() {
+        let config = EffortConfig {
+            field: "reasoning.effort".into(),
+            map: Default::default(),
+            default: None,
+            remove: vec!["output_config".into()],
+        };
+        let source = json!({"output_config": {"effort": "xhigh"}});
+        let mut body = source.clone();
+        assert_eq!(apply(Some(&config), &source, &mut body).as_deref(), Some("xhigh"));
+        assert_eq!(body["reasoning"]["effort"], "xhigh");
+        assert!(body.get("output_config").is_none());
+
+        // Nothing requested and no default: upstream decides.
+        let source = json!({});
+        let mut body = source.clone();
+        assert_eq!(apply(Some(&config), &source, &mut body), None);
+        assert!(body.get("reasoning").is_none());
     }
 
     #[test]
