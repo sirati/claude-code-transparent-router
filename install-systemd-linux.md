@@ -180,7 +180,7 @@ handles the rest:
   `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — that setting is per session, not per
   model, so the smallest is the only value safe for all of them.
 
-Set `context_tokens` in the config to override that number. Anthropic models
+Set `force_max_context_window` in the config to pin that number. Anthropic models
 ignore the variable, so the main session is unaffected either way.
 
 ## Agents
@@ -191,7 +191,7 @@ Each agent names a model and effort — `~/.claude/agents/flash.md`:
 ---
 name: flash
 description: Cheap, fast helper for mechanical edits.
-model: deepseek/flash
+model: deepseek/flash[1m]
 effort: low
 tools: Read, Grep, Glob
 ---

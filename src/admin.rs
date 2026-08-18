@@ -113,7 +113,7 @@ async fn context_window(State(state): State<AppState>, Caller(uid): Caller) -> S
         .filter_map(|model| model.context_window)
         .min();
     config
-        .context_tokens
+        .force_max_context_window
         .or(smallest)
         .map(|tokens| tokens.to_string())
         .unwrap_or_default()

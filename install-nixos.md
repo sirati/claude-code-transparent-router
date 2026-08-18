@@ -127,7 +127,7 @@ smallest window among the others is exported as
 session rather than per model, so the smallest is the only value safe for
 all of them. Anthropic models ignore it, so the main session is unaffected.
 
-Declare `contextWindow` on a hand-configured model, or set `contextTokens`
+Declare `contextWindow` on a hand-configured model, or set `forceMaxContextWindow`
 to pin the exported number.
 
 ## Troubleshooting

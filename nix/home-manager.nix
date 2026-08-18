@@ -37,7 +37,7 @@ let
     }
     # TOML has no null, so an unset choice is an absent key.
     // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; }
-    // lib.optionalAttrs (cfg.contextTokens != null) { context_tokens = cfg.contextTokens; }
+    // lib.optionalAttrs (cfg.forceMaxContextWindow != null) { force_max_context_window = cfg.forceMaxContextWindow; }
     // cfg.extraSettings
   );
 
@@ -233,7 +233,7 @@ in
       '';
     };
 
-    contextTokens = lib.mkOption {
+    forceMaxContextWindow = lib.mkOption {
       type = lib.types.nullOr lib.types.int;
       default = null;
       description = ''

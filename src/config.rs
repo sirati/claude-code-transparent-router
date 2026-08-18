@@ -33,9 +33,10 @@ struct FileConfig {
     /// activation. Absent or zero keeps the daemon resident.
     #[serde(default)]
     idle_timeout_secs: Option<u64>,
-    /// Overrides the context window reported for `CLAUDE_CODE_MAX_CONTEXT_TOKENS`.
+    /// Pins the window reported for `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, instead
+    /// of deriving it from the configured models.
     #[serde(default)]
-    context_tokens: Option<u64>,
+    force_max_context_window: Option<u64>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -177,8 +178,8 @@ pub struct Config {
     pub user_config: bool,
     /// Idle seconds before the daemon exits; None or zero means stay.
     pub idle_timeout_secs: Option<u64>,
-    /// Explicit session context window, overriding what the models imply.
-    pub context_tokens: Option<u64>,
+    /// Pinned session context window, overriding what the models imply.
+    pub force_max_context_window: Option<u64>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -319,7 +320,7 @@ impl Config {
             },
             user_config: file.user_config,
             idle_timeout_secs: file.idle_timeout_secs,
-            context_tokens: file.context_tokens,
+            force_max_context_window: file.force_max_context_window,
             picker_model: file.picker_model,
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
