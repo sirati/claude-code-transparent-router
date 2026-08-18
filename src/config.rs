@@ -49,14 +49,17 @@ pub struct EffortConfig {
     pub remove: Vec<String>,
 }
 
-/// Which API dialect the provider speaks. `anthropic` providers get
-/// near-passthrough (model rewrite + credential swap, response verbatim);
-/// `openai` providers go through the Messages <-> chat-completions translator.
+/// Which API dialect the provider speaks. `anthropic` gets near-passthrough
+/// (model rewrite + credential swap, response verbatim); `openai` goes
+/// through the Messages <-> chat-completions translator; `responses` through
+/// the Messages <-> Responses translator, which is what OpenAI's newer models
+/// need for tool calling.
 #[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "lowercase")]
 pub enum ApiFormat {
     Openai,
     Anthropic,
+    Responses,
 }
 
 /// A model entry: either a bare upstream ID, or an ID plus the display name

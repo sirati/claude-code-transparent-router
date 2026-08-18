@@ -1,0 +1,247 @@
+//! OpenAI Responses SSE -> Anthropic Messages SSE.
+//!
+//! Responses numbers its own output items; Anthropic numbers content blocks.
+//! The translator keeps its own block counter and a map from the provider's
+//! `output_index` to the block it opened, so indices stay sequential and each
+//! block is closed exactly once whatever order events arrive in.
+
+use std::collections::BTreeMap;
+use std::convert::Infallible;
+
+use axum::body::{Body, Bytes};
+use axum::response::Response;
+use futures_util::{Stream, StreamExt};
+use serde_json::Value;
+
+use crate::passthrough::{PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE};
+use crate::sse::anthropic as sse;
+
+pub fn response(upstream: reqwest::Response, alias_model: String) -> Response {
+    Response::builder()
+        .status(200)
+        .header("content-type", "text/event-stream")
+        .header("cache-control", "no-cache")
+        .header(PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE)
+        .body(Body::from_stream(translate(upstream.bytes_stream(), alias_model)))
+        .expect("stream response")
+}
+
+fn translate(
+    upstream: impl Stream<Item = reqwest::Result<Bytes>> + Send + 'static,
+    alias_model: String,
+) -> impl Stream<Item = Result<String, Infallible>> + Send {
+    async_stream::stream! {
+        let mut translator = Translator::new(alias_model);
+        // Byte-level buffer: chunk boundaries can split UTF-8 sequences, so
+        // decoding happens per complete line.
+        let mut buf: Vec<u8> = Vec::new();
+        let mut upstream = std::pin::pin!(upstream);
+        while let Some(chunk) = upstream.next().await {
+            let mut out = String::new();
+            match chunk {
+                Ok(bytes) => {
+                    buf.extend_from_slice(&bytes);
+                    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                        let line: Vec<u8> = buf.drain(..=pos).collect();
+                        translator.on_line(&String::from_utf8_lossy(&line), &mut out);
+                    }
+                }
+                Err(err) => {
+                    out.push_str(&sse::error(&format!(
+                        "[{PROXY_ORIGIN_VALUE}] provider stream failed: {err}"
+                    )));
+                    yield Ok::<_, Infallible>(out);
+                    return;
+                }
+            }
+            if !out.is_empty() { yield Ok(out); }
+        }
+        let mut out = String::new();
+        translator.finish(&mut out);
+        if !out.is_empty() { yield Ok(out); }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Text,
+    Thinking,
+    Tool,
+}
+
+pub struct Translator {
+    alias_model: String,
+    started: bool,
+    done: bool,
+    next_index: usize,
+    /// Provider `output_index` -> (our block index, kind).
+    open: BTreeMap<u64, (usize, Kind)>,
+    stop: &'static str,
+    input_tokens: u64,
+    output_tokens: u64,
+}
+
+impl Translator {
+    pub fn new(alias_model: String) -> Self {
+        Self {
+            alias_model,
+            started: false,
+            done: false,
+            next_index: 0,
+            open: BTreeMap::new(),
+            stop: "end_turn",
+            input_tokens: 0,
+            output_tokens: 0,
+        }
+    }
+
+    /// Feed one SSE line; Anthropic frames are appended to `out`.
+    pub fn on_line(&mut self, line: &str, out: &mut String) {
+        let Some(payload) = line.trim_end_matches(['\n', '\r']).strip_prefix("data:") else {
+            return;
+        };
+        let payload = payload.trim();
+        if payload == "[DONE]" {
+            self.finish(out);
+            return;
+        }
+        let Ok(event) = serde_json::from_str::<Value>(payload) else { return };
+        if self.done {
+            return;
+        }
+        let Some(kind) = event["type"].as_str() else { return };
+        let output_index = event["output_index"].as_u64().unwrap_or(0);
+
+        match kind {
+            "response.created" => {
+                let id = event["response"]["id"].as_str().unwrap_or("msg_routed");
+                self.start(id, out);
+            }
+            "response.output_item.added" => {
+                self.start("msg_routed", out);
+                self.open_item(output_index, &event["item"], out);
+            }
+            "response.output_text.delta" => {
+                if let Some(text) = event["delta"].as_str() {
+                    let index = self.ensure(output_index, Kind::Text, out);
+                    out.push_str(&sse::text_delta(index, text));
+                }
+            }
+            "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
+                if let Some(text) = event["delta"].as_str() {
+                    let index = self.ensure(output_index, Kind::Thinking, out);
+                    out.push_str(&sse::thinking_delta(index, text));
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                if let Some(fragment) = event["delta"].as_str() {
+                    // The block was opened by output_item.added, which carries
+                    // the call id and name; without it there is nothing to
+                    // attach arguments to.
+                    if let Some((index, _)) = self.open.get(&output_index) {
+                        out.push_str(&sse::input_json_delta(*index, fragment));
+                    }
+                }
+            }
+            "response.output_item.done" => self.close(output_index, out),
+            "response.completed" | "response.incomplete" => {
+                self.read_usage(&event["response"]);
+                if event["response"]["status"] == Value::String("incomplete".into()) {
+                    self.stop = "max_tokens";
+                }
+                self.finish(out);
+            }
+            "response.failed" | "error" => {
+                let message = event["response"]["error"]["message"]
+                    .as_str()
+                    .or_else(|| event["message"].as_str())
+                    .unwrap_or("provider reported an error");
+                out.push_str(&sse::error(&format!("[{PROXY_ORIGIN_VALUE}] {message}")));
+                self.done = true;
+            }
+            _ => {}
+        }
+    }
+
+    /// Close the message; safe to call repeatedly, and used when the provider
+    /// ends the stream without a terminal event.
+    pub fn finish(&mut self, out: &mut String) {
+        if self.done {
+            return;
+        }
+        self.done = true;
+        self.start("msg_routed", out);
+        for index in std::mem::take(&mut self.open).into_values() {
+            out.push_str(&sse::content_block_stop(index.0));
+        }
+        out.push_str(&sse::message_delta(self.stop, self.input_tokens, self.output_tokens));
+        out.push_str(&sse::message_stop());
+    }
+
+    fn start(&mut self, id: &str, out: &mut String) {
+        if !self.started {
+            self.started = true;
+            out.push_str(&sse::message_start(id, &self.alias_model));
+        }
+    }
+
+    fn open_item(&mut self, output_index: u64, item: &Value, out: &mut String) {
+        if self.open.contains_key(&output_index) {
+            return;
+        }
+        // A block can never precede message_start, even when the provider
+        // sends deltas for an item it never announced.
+        self.start("msg_routed", out);
+        let (kind, block) = match item["type"].as_str() {
+            Some("function_call") => {
+                self.stop = "tool_use";
+                let fallback = format!("toolu_{}", self.next_index);
+                let id = item["call_id"]
+                    .as_str()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&fallback)
+                    .to_string();
+                let name = item["name"].as_str().unwrap_or_default().to_string();
+                (Kind::Tool, sse::tool_use_block(&id, &name))
+            }
+            Some("reasoning") => (Kind::Thinking, sse::thinking_block()),
+            _ => (Kind::Text, sse::text_block()),
+        };
+        let index = self.next_index;
+        self.next_index += 1;
+        out.push_str(&sse::content_block_start(index, block));
+        self.open.insert(output_index, (index, kind));
+    }
+
+    /// Deltas can arrive for an item the provider never announced; open a
+    /// block of the right kind rather than dropping the content.
+    fn ensure(&mut self, output_index: u64, kind: Kind, out: &mut String) -> usize {
+        if let Some((index, open_kind)) = self.open.get(&output_index) {
+            if *open_kind == kind {
+                return *index;
+            }
+        }
+        let item = match kind {
+            Kind::Thinking => serde_json::json!({"type": "reasoning"}),
+            _ => serde_json::json!({"type": "message"}),
+        };
+        self.close(output_index, out);
+        self.open_item(output_index, &item, out);
+        self.open[&output_index].0
+    }
+
+    fn close(&mut self, output_index: u64, out: &mut String) {
+        if let Some((index, _)) = self.open.remove(&output_index) {
+            out.push_str(&sse::content_block_stop(index));
+        }
+    }
+
+    fn read_usage(&mut self, response: &Value) {
+        if let Some(n) = response["usage"]["input_tokens"].as_u64() {
+            self.input_tokens = n;
+        }
+        if let Some(n) = response["usage"]["output_tokens"].as_u64() {
+            self.output_tokens = n;
+        }
+    }
+}

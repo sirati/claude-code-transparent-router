@@ -1,5 +1,6 @@
-//! Anthropic Messages in, Anthropic Messages out, an OpenAI-compatible
-//! chat-completions API in the middle.
+//! Anthropic Messages in, Anthropic Messages out, an OpenAI Responses API in
+//! the middle. Used by providers whose tool calling requires `/v1/responses`
+//! rather than chat-completions.
 
 pub mod request;
 pub mod response;
@@ -11,39 +12,41 @@ use axum::response::Response;
 use serde_json::Value;
 
 use crate::config::ProviderConfig;
-use crate::credentials::SecretKey;
-use crate::providers::{json_response, provider_error};
+use crate::providers::{json_response, provider_error, ProviderAuth};
 
 pub async fn messages(
     client: &reqwest::Client,
     provider: &ProviderConfig,
-    key: SecretKey,
+    auth: ProviderAuth,
     body: Bytes,
     real_model: String,
 ) -> Response {
     let anthropic_req: Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
-        Err(err) => return crate::passthrough::proxy_error(&format!("request body is not valid JSON: {err}")),
+        Err(err) => {
+            return crate::passthrough::proxy_error(&format!(
+                "request body is not valid JSON: {err}"
+            ))
+        }
     };
-    // The CLI gets back the model name it asked for (the alias), never the
-    // provider-internal ID.
+    // The CLI gets back the alias it asked for, never the provider's own ID.
     let alias = anthropic_req["model"].as_str().unwrap_or(&real_model).to_string();
     let streaming = anthropic_req["stream"].as_bool().unwrap_or(false);
-    let mut openai_req = request::to_openai(&anthropic_req, &real_model, streaming);
+    let mut outgoing = request::to_responses(&anthropic_req, &real_model, streaming);
     if let Some(level) =
-        crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut openai_req)
+        crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut outgoing)
     {
         tracing::debug!(provider = provider.name, effort = level, "effort mapped");
     }
 
-    // Fresh header map, never the inbound one: the Anthropic credential
-    // cannot reach this provider.
+    // Fresh header map from the auth material only: nothing inbound, so the
+    // Anthropic credential cannot reach this provider.
     let sent = client
-        .post(format!("{}/chat/completions", provider.base_url))
-        .header("authorization", format!("Bearer {}", key.expose()))
+        .post(format!("{}/responses", provider.base_url))
+        .headers(auth.into_headers())
         .header("content-type", "application/json")
         .header("accept", if streaming { "text/event-stream" } else { "application/json" })
-        .body(openai_req.to_string())
+        .body(outgoing.to_string())
         .send()
         .await;
 
@@ -76,7 +79,7 @@ pub async fn messages(
             }
         };
         match serde_json::from_slice::<Value>(&bytes) {
-            Ok(openai) => json_response(StatusCode::OK, response::to_anthropic(&openai, &alias)),
+            Ok(parsed) => json_response(StatusCode::OK, response::to_anthropic(&parsed, &alias)),
             Err(err) => crate::passthrough::proxy_error(&format!(
                 "provider '{}' returned invalid JSON: {err}",
                 provider.name

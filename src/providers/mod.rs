@@ -1,16 +1,51 @@
 //! Second-provider paths. Only reachable for `anthropic/<model>` aliases.
-//! Inbound headers are never passed into this module: request signatures take
-//! body bytes and the model only, so the Anthropic credential cannot leak
-//! here by construction.
+//! Inbound headers are never passed into these modules: every provider
+//! request is built from a [`ProviderAuth`] constructed here, so the
+//! Anthropic credential cannot leak to a provider by construction.
 
 pub mod anthropic_compat;
 pub mod openai_compat;
+pub mod responses;
 
-use axum::body::Bytes;
+use axum::body::{Body, Bytes};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
+use serde_json::Value;
 
 use crate::config::ApiFormat;
-use crate::{passthrough, AppState};
+use crate::credentials::SecretKey;
+use crate::passthrough::{proxy_error, PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE};
+use crate::AppState;
+
+/// Authentication material for one provider request. Built fresh per request
+/// from the credential store; never derived from the inbound header map.
+pub struct ProviderAuth {
+    headers: Vec<(String, String)>,
+}
+
+impl ProviderAuth {
+    /// Bearer-token auth, the common case for API keys.
+    pub fn bearer(key: &SecretKey) -> Self {
+        Self { headers: vec![("authorization".into(), format!("Bearer {}", key.expose()))] }
+    }
+
+    pub fn with(mut self, name: &str, value: impl Into<String>) -> Self {
+        self.headers.push((name.to_string(), value.into()));
+        self
+    }
+
+    pub fn into_headers(self) -> HeaderMap {
+        let mut map = HeaderMap::new();
+        for (name, value) in self.headers {
+            if let (Ok(name), Ok(value)) =
+                (HeaderName::try_from(name), HeaderValue::try_from(value))
+            {
+                map.append(name, value);
+            }
+        }
+        map
+    }
+}
 
 pub async fn dispatch(
     state: &AppState,
@@ -24,7 +59,7 @@ pub async fn dispatch(
         return count_tokens(&body);
     }
     let Some(key) = state.credentials.get(&provider.name) else {
-        return passthrough::proxy_error(&format!(
+        return proxy_error(&format!(
             "provider '{name}' is configured but has no credentials set; \
              run claude-router in a terminal to set one, or supply the systemd \
              credential '{name}' / the {env}_API_KEY environment variable",
@@ -40,17 +75,52 @@ pub async fn dispatch(
         ApiFormat::Anthropic => {
             anthropic_compat::messages(&state.client, provider, key, body, real_model).await
         }
+        ApiFormat::Responses => {
+            let auth = ProviderAuth::bearer(&key);
+            responses::messages(&state.client, provider, auth, body, real_model).await
+        }
     }
+}
+
+/// Provider-side errors are re-shaped into Anthropic's error envelope (the
+/// CLI knows how to display those) with the upstream status preserved and the
+/// provider's own message quoted.
+pub fn provider_error(status: StatusCode, provider: &str, detail: &str) -> Response {
+    let message = format!("provider '{provider}' returned {status}: {}", detail.trim());
+    json_response(
+        status,
+        serde_json::json!({
+            "type": "error",
+            "error": {"type": error_type(status), "message": message},
+        }),
+    )
+}
+
+fn error_type(status: StatusCode) -> &'static str {
+    match status.as_u16() {
+        400 => "invalid_request_error",
+        401 => "authentication_error",
+        403 => "permission_error",
+        404 => "not_found_error",
+        413 => "request_too_large",
+        429 => "rate_limit_error",
+        529 => "overloaded_error",
+        _ => "api_error",
+    }
+}
+
+pub fn json_response(status: StatusCode, body: Value) -> Response {
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .header(PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE)
+        .body(Body::from(body.to_string()))
+        .expect("provider json response")
 }
 
 /// Token counting for provider models: a coarse local estimate (these
 /// providers have no count endpoint). Good enough for context budgeting.
 fn count_tokens(body: &Bytes) -> Response {
     let estimate = (body.len() / 4).max(1);
-    Response::builder()
-        .status(200)
-        .header("content-type", "application/json")
-        .header(passthrough::PROXY_ORIGIN_HEADER, passthrough::PROXY_ORIGIN_VALUE)
-        .body(axum::body::Body::from(format!("{{\"input_tokens\":{estimate}}}")))
-        .expect("count_tokens response")
+    json_response(StatusCode::OK, serde_json::json!({"input_tokens": estimate}))
 }
