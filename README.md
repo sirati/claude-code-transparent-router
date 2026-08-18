@@ -17,7 +17,8 @@ A loopback HTTP router — point Claude Code at it instead of
 ## Agents
 
 An agent names its own model and effort, which is what makes a session mixed.
-Claude Code shows one custom model in `/model`; agents have no such limit.
+`/model` lists every configured model, via Claude Code's gateway discovery;
+agents can name any of them directly.
 
 ```markdown
 ---
@@ -66,7 +67,7 @@ On NixOS through the module options; elsewhere
 you. Credentials are set with `claude-router`, never in the configuration.
 
 ```toml
-picker_model = "deepseek/pro"  # fills Claude Code's one custom /model entry
+picker_model = "deepseek/pro"  # the extra custom /model entry, on top of discovery
 
 [providers.deepseek]
 preset = "deepseek"

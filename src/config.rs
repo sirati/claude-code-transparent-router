@@ -20,8 +20,9 @@ struct FileConfig {
     /// unset means any local user may connect, as any loopback port allows.
     #[serde(default)]
     allowed_uids: Vec<u32>,
-    /// Which model fills Claude Code's single custom /model row. Written
-    /// either as the alias or the bare provider model ID.
+    /// Which model fills the extra custom /model row; gateway discovery
+    /// already lists every configured model. Written as the alias or the bare
+    /// provider model ID.
     #[serde(default)]
     picker_model: Option<String>,
     /// Serve each connecting user from their own config and credentials in
@@ -225,7 +226,8 @@ pub struct ProviderConfig {
     /// Provider API base URL, no trailing slash.
     pub base_url: String,
     pub api: ApiFormat,
-    /// Real upstream models, served in /v1/models as `anthropic/<id>`.
+    /// Real upstream models, served in /v1/models as
+    /// `claude-routed-<provider>/<id>`.
     pub models: Vec<Model>,
     pub effort: Option<EffortConfig>,
     pub oauth: Option<OauthConfig>,

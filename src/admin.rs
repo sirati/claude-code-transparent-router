@@ -20,6 +20,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/__router/providers", get(providers))
         .route("/__router/picker", get(picker))
+        .route("/__router/gateway-models", get(gateway_models))
         .route("/__router/credentials/{provider}", put(set_credential).delete(clear_credential))
         .route("/__router/oauth/{provider}", put(set_tokens))
 }
@@ -53,8 +54,9 @@ fn strip_qualifier(model: &str) -> &str {
 
 /// Plain-text picker rows (`<alias>\t<display name>` per line) for shell
 /// consumers like the claude-routed wrapper, which turns the first line into
-/// ANTHROPIC_CUSTOM_MODEL_OPTION. Claude Code's gateway model discovery only
-/// runs with API-key auth, so OAuth sessions need this route instead.
+/// ANTHROPIC_CUSTOM_MODEL_OPTION. That env var is the single extra entry on
+/// top of gateway discovery (which shows every model), used to pin
+/// `picker_model` and for builds older than discovery.
 async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
     let config = state.config_for(uid);
     let mut rows: Vec<(bool, String)> = Vec::new();
@@ -90,6 +92,36 @@ async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
         }
     }
     rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// The gateway model cache Claude Code reads when live discovery does not run —
+/// which is every claude.ai OAuth session, since discovery only fires when
+/// `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY` is set in the environment.
+/// The wrapper fetches this and writes it to
+/// `~/.claude/cache/gateway-models.json` before starting the CLI.
+async fn gateway_models(
+    State(state): State<AppState>,
+    Caller(uid): Caller,
+    headers: axum::http::HeaderMap,
+) -> Json<Value> {
+    let config = state.config_for(uid);
+    // The base URL must match `ANTHROPIC_BASE_URL` byte-for-byte or the CLI
+    // ignores the cache; the request's Host is exactly where the wrapper
+    // reached us, so it is echoed back rather than guessed from `listen`.
+    let base_url = headers
+        .get(axum::http::header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .map(|host| format!("http://{host}"))
+        .unwrap_or_else(|| format!("http://{}", config.listen));
+    let fetched_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let models: Vec<Value> = crate::catalog::gateway_rows(&config)
+        .into_iter()
+        .map(|row| json!({ "id": row["id"].clone(), "display_name": row["display_name"].clone() }))
+        .collect();
+    Json(json!({ "baseUrl": base_url, "fetchedAt": fetched_at, "models": models }))
 }
 
 async fn providers(

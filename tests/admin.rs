@@ -122,6 +122,33 @@ async fn picker_model_leads_the_row_list() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[tokio::test]
+async fn gateway_models_serve_the_cache_shape() {
+    let dir = std::env::temp_dir().join(format!("gateway-test-{}", std::process::id()));
+    let app = test_app(&dir);
+
+    let response = app
+        .oneshot(Request::get("/__router/gateway-models").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body: Value = serde_json::from_slice(&bytes).unwrap();
+
+    // The cache file Claude Code reads: baseUrl + fetchedAt + models, with
+    // discovery-eligible ids and a display name.
+    assert!(body["baseUrl"].is_string());
+    assert!(body["fetchedAt"].is_u64());
+    let models = body["models"].as_array().unwrap();
+    assert_eq!(models.len(), 3);
+    for model in models {
+        let id = model["id"].as_str().unwrap();
+        assert!(id.starts_with("claude-routed-"), "{id}");
+        assert!(model["display_name"].is_string());
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn per_user_mode_resolves_each_uid_to_its_own_home() {
     let base = std::env::temp_dir().join(format!("multiuser-{}", std::process::id()));

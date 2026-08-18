@@ -7,6 +7,13 @@ use crate::config::Config;
 /// are advertised with it.
 pub const LARGE_CONTEXT_MARKER: &str = "[1m]";
 
+/// Prefix on the ids served by `GET /v1/models`. Claude Code's gateway
+/// discovery keeps only ids that start with `claude` (or `anthropic`), so a
+/// routed model is advertised as `claude-routed-<provider>/<model>` and this
+/// prefix is stripped back off before routing. It is a fixed literal, never
+/// parsed from the id, so a real `claude-*` model name is never misread.
+pub const GATEWAY_PREFIX: &str = "claude-routed-";
+
 pub enum Backend {
     Anthropic,
     Provider { provider: usize, real_model: String },
@@ -39,8 +46,9 @@ pub fn route(config: &Config, body: &[u8]) -> Backend {
 /// Anything else is Anthropic's to answer.
 pub fn resolve(config: &Config, model: &str) -> Backend {
     // Claude Code strips its context marker before sending, but a model named
-    // by hand may still carry one.
+    // by hand may still carry one; the gateway prefix is always ours to undo.
     let model = model.strip_suffix(LARGE_CONTEXT_MARKER).unwrap_or(model);
+    let model = model.strip_prefix(GATEWAY_PREFIX).unwrap_or(model);
 
     if let Some((provider, rest)) = model.split_once('/') {
         return match find(config, Some(provider), rest) {
@@ -110,6 +118,23 @@ mod tests {
     #[test]
     fn accepts_a_bare_model_id() {
         assert_eq!(routed("alpha-model"), Some((0, "alpha-model".into())));
+    }
+
+    #[test]
+    fn gateway_alias_round_trips() {
+        // The /v1/models discovery id, with the 1M marker Claude Code appends
+        // for large-context models.
+        assert_eq!(
+            routed(&format!("{GATEWAY_PREFIX}beta/beta-model")),
+            Some((1, "beta-model".into()))
+        );
+        assert_eq!(
+            routed(&format!("{GATEWAY_PREFIX}beta/beta-model{LARGE_CONTEXT_MARKER}")),
+            Some((1, "beta-model".into()))
+        );
+        // A real claude model id is untouched: the fixed literal only matches
+        // our own prefix.
+        assert!(matches!(resolve(&config(), "claude-sonnet-5"), Backend::Anthropic));
     }
 
     #[test]
