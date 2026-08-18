@@ -9,20 +9,25 @@ use crate::{passthrough, AppState};
 /// GET /v1/models: Anthropic's catalog with the second provider's models
 /// spliced in. Claude Code's model picker drops IDs that don't start with
 /// `claude` or `anthropic`, hence the `anthropic/<id>` aliases.
-pub async fn models(State(state): State<AppState>, req: Request) -> Response {
+pub async fn models(
+    State(state): State<AppState>,
+    crate::peer::Caller(uid): crate::peer::Caller,
+    req: Request,
+) -> Response {
+    let config = state.config_for(uid);
     let (mut parts, body) = req.into_parts();
     let bytes = match to_bytes(body, 1024 * 1024).await {
         Ok(bytes) => bytes,
         Err(err) => return passthrough::proxy_error(&format!("failed to read request body: {err}")),
     };
-    if !state.config.providers.is_empty() {
+    if !config.providers.is_empty() {
         // Owned route: request an identity body so the catalog can be parsed
         // and merged. Pure passthrough (no providers) stays verbatim.
         parts.headers.remove("accept-encoding");
     }
-    let upstream = passthrough::send(&state, parts, bytes).await;
+    let upstream = passthrough::send(&state, &config, parts, bytes).await;
 
-    if state.config.providers.is_empty() || !upstream.status().is_success() {
+    if config.providers.is_empty() || !upstream.status().is_success() {
         return upstream;
     }
 
@@ -39,7 +44,7 @@ pub async fn models(State(state): State<AppState>, req: Request) -> Response {
     // Append to the final page only, so paginated fetches see each entry once.
     let last_page = catalog["has_more"] == json!(false);
     if let (true, Some(data)) = (last_page, catalog["data"].as_array_mut()) {
-        for provider in &state.config.providers {
+        for provider in &config.providers {
             for model in &provider.models {
                 let display_name = model
                     .display_name

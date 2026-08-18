@@ -20,6 +20,7 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
     app(AppState {
         client: reqwest::Client::new(),
         config: Arc::new(config),
+        user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
     })
 }
@@ -99,6 +100,7 @@ async fn picker_model_leads_the_row_list() {
     let app = app(AppState {
         client: reqwest::Client::new(),
         config: Arc::new(config),
+        user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
     });
 
@@ -117,35 +119,35 @@ async fn picker_model_leads_the_row_list() {
 }
 
 #[test]
-fn per_user_mode_keeps_each_uid_in_its_own_store() {
+fn per_user_mode_resolves_each_uid_to_its_own_home() {
     let base = std::env::temp_dir().join(format!("multiuser-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&base);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/providers.toml");
     let mut config = Config::load(Some(fixture)).unwrap();
     config.credentials_dir = base.clone();
-    config.per_user_credentials = true;
+    let config = Arc::new(config);
     let state = AppState {
         client: reqwest::Client::new(),
-        config: Arc::new(config),
+        user_configs: Some(Arc::new(
+            claude_code_transparent_router::user_config::UserConfigs::new(config.clone()),
+        )),
+        config,
         listen: "127.0.0.1:9999".parse().unwrap(),
     };
 
-    // Two users set a key for the same provider.
-    state.credentials(Some(1000)).set("alpha", "sk-user-1000").unwrap();
-    state.credentials(Some(1001)).set("alpha", "sk-user-1001").unwrap();
+    // A real uid resolves to that user's own state directory.
+    let own = claude_code_transparent_router::peer::own_uid().unwrap();
+    let home = claude_code_transparent_router::user_config::home_dir(own).unwrap();
+    assert_eq!(state.state_dir(Some(own)), home.join(".local/state/claude-router/credentials"));
 
-    assert_eq!(state.credentials(Some(1000)).get("alpha").unwrap().expose(), "sk-user-1000");
-    assert_eq!(state.credentials(Some(1001)).get("alpha").unwrap().expose(), "sk-user-1001");
-    // A third user sees nothing, and an unidentified caller gets an empty store.
-    assert!(state.credentials(Some(1002)).get("alpha").is_none());
-    assert!(state.credentials(None).get("alpha").is_none());
-    assert_ne!(state.state_dir(Some(1000)), state.state_dir(Some(1001)));
-
-    let _ = std::fs::remove_dir_all(&base);
+    // A uid with no passwd entry, and an unidentified caller, each get an
+    // isolated directory rather than somebody else's keys.
+    assert!(state.state_dir(Some(999_999)).starts_with(&base));
+    assert_ne!(state.state_dir(Some(999_999)), state.state_dir(Some(own)));
+    assert_ne!(state.state_dir(None), state.state_dir(Some(own)));
 }
 
 #[test]
-fn shared_mode_uses_one_store_for_everyone() {
+fn single_user_mode_uses_one_store_for_everyone() {
     let base = std::env::temp_dir().join(format!("singleuser-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/providers.toml");
@@ -154,6 +156,7 @@ fn shared_mode_uses_one_store_for_everyone() {
     let state = AppState {
         client: reqwest::Client::new(),
         config: Arc::new(config),
+        user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
     };
 

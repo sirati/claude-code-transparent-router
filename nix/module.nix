@@ -3,23 +3,21 @@ let
   cfg = config.services.claude-router;
   settingsFormat = pkgs.formats.toml { };
 
-  # The config file is generated from this module and never contains
-  # credentials; those arrive via systemd LoadCredential only.
-  configFile = settingsFormat.generate "claude-router.toml" {
-    listen = "127.0.0.1:${toString cfg.port}";
-    anthropic_upstream = cfg.anthropicUpstream;
-    allowed_uids = cfg.allowedUids;
-    per_user_credentials = cfg.perUserCredentials;
-    providers = lib.mapAttrs (_: p:
-      lib.optionalAttrs (p.preset != null) { preset = p.preset; }
-      // lib.optionalAttrs (p.baseUrl != null) { base_url = p.baseUrl; }
-      // lib.optionalAttrs (p.api != null) { api = p.api; }
-      // lib.optionalAttrs (p.models != [ ]) {
-        models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
-      }
-      // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
-    ) cfg.providers;
-  } // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; };
+  # Deliberately no machine-wide provider config: the daemon resolves each
+  # connecting user's own ~/.config/claude-router/config.toml from their uid,
+  # so nothing personal is configured system-wide. Only daemon-level settings
+  # are passed, and those go on the command line.
+  execStart = lib.concatStringsSep " " (
+    [
+      (lib.getExe cfg.package)
+      "--daemon"
+      "--listen"
+      "127.0.0.1:${toString cfg.port}"
+      "--idle-timeout"
+      (toString cfg.idleTimeout)
+    ]
+    ++ lib.optional cfg.perUserConfig "--user-config"
+  );
 
   providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
 
@@ -67,14 +65,6 @@ in
       description = "Install the Claude Code wrapper system-wide.";
     };
 
-    settingsFile = lib.mkOption {
-      type = lib.types.path;
-      readOnly = true;
-      default = configFile;
-      defaultText = lib.literalExpression "<generated claude-router.toml>";
-      description = "The generated router config, exposed for inspection.";
-    };
-
     wrapperPackage = lib.mkOption {
       type = lib.types.package;
       readOnly = true;
@@ -92,18 +82,29 @@ in
       description = "Loopback port the router listens on.";
     };
 
-    perUserCredentials = lib.mkOption {
+    idleTimeout = lib.mkOption {
+      type = lib.types.int;
+      default = 300;
+      description = ''
+        Seconds without a request before the daemon exits, leaving the socket
+        to start it again on the next connection. A streaming turn counts as
+        activity for its whole duration. 0 keeps it resident.
+      '';
+    };
+
+    perUserConfig = lib.mkOption {
       type = lib.types.bool;
       default = true;
       description = ''
-        Keep each connecting user's credentials and logins in their own
-        directory under the service's state directory, keyed by the uid the
-        kernel reports for the connection. This is what lets one machine-wide
-        daemon serve several people without them sharing keys.
+        Serve each connecting user from their own
+        `~/.config/claude-router/config.toml` and their own credentials in
+        `~/.local/state/claude-router`, resolved from the uid the kernel
+        reports for the connection. Nothing that belongs to a person is then
+        configured machine-wide, and users manage their own providers with
+        the same TUI and `login` command as a single-user install.
 
         Machine-level keys from `apiKeyFile` still apply to everyone: a
         systemd credential outranks a user's own stored key for that provider.
-        Set this to false to have every user share one credential store.
       '';
     };
 
@@ -258,6 +259,8 @@ in
       # wherever the wrapper does.
       ++ lib.optional cfg.installWrapper cfg.package;
 
+    # Socket activation: systemd holds the port, the daemon starts on the
+    # first connection and exits again once idle.
     systemd.sockets.claude-router = {
       wantedBy = [ "sockets.target" ];
       socketConfig.ListenStream = "127.0.0.1:${toString cfg.port}";
@@ -265,17 +268,23 @@ in
 
     systemd.services.claude-router = {
       requires = [ "claude-router.socket" ];
-      after = [ "network.target" ];
+      after = [ "network.target" "claude-router.socket" ];
+      # Started by the socket, not at boot.
+      wantedBy = [ ];
       serviceConfig = {
-        ExecStart = "${lib.getExe cfg.package} --daemon --config ${configFile}";
+        ExecStart = execStart;
         DynamicUser = true;
-        # Writable home for credentials set at runtime through the admin API.
+        # Users' own credentials live in their homes and are written by the
+        # CLI running as them; the daemon only reads. The state directory is
+        # just for a daemon with no per-user resolution.
         StateDirectory = "claude-router";
         LoadCredential =
           lib.mapAttrsToList (name: p: "${name}:${p.apiKeyFile}") providersWithKey;
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ProtectHome = true;
+        # Read-only rather than off: the daemon must read each user's config
+        # and credentials, and must never write into their home.
+        ProtectHome = if cfg.perUserConfig then "read-only" else true;
         PrivateTmp = true;
         # AF_UNIX is required for NSS/nscd name resolution on NixOS.
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];

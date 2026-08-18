@@ -17,9 +17,32 @@ pub fn draw(frame: &mut Frame, app: &App) {
     draw_providers(frame, app, table);
     draw_footer(frame, app, footer);
 
-    if let Mode::Entering { input } = &app.mode {
-        draw_input_popup(frame, app, input);
+    match &app.mode {
+        Mode::Entering { input } => draw_input_popup(frame, app, input),
+        Mode::LoggingIn { provider, url } => draw_login_popup(frame, provider, url),
+        _ => {}
     }
+}
+
+/// The browser is already open; the URL is here for when it is not, and for
+/// signing in from a machine without one.
+fn draw_login_popup(frame: &mut Frame, provider: &str, url: &str) {
+    let area = centered(frame.area(), frame.area().width.saturating_sub(8).min(100), 9);
+    let text = vec![
+        Line::from("Waiting for the browser to finish signing in..."),
+        Line::from(""),
+        Line::from(Span::styled("If it did not open, visit:", Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(url.to_string(), Style::default().fg(Color::Cyan))),
+        Line::from(""),
+        Line::from(Span::styled("Esc to cancel", Style::default().fg(Color::DarkGray))),
+    ];
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(ratatui::widgets::Wrap { trim: false })
+            .block(Block::default().borders(Borders::ALL).title(format!(" sign in to '{provider}' "))),
+        area,
+    );
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -129,7 +152,7 @@ fn draw_footer(frame: &mut Frame, app: &App, area: Rect) {
                 Line::from(Span::styled(status.clone(), Style::default().fg(Color::Yellow)))
             }
             None => Line::from(Span::styled(
-                "↑/↓ select   [s]et credential   [c]lear credential   [r]efresh   [q]uit",
+                "↑/↓ select   [s]et key   [l]og in   [c]lear   [r]efresh   [q]uit",
                 Style::default().fg(Color::DarkGray),
             )),
         },

@@ -3,24 +3,50 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use claude_code_transparent_router::{app, config, tui, AppState};
+use claude_code_transparent_router::{config, tui, AppState};
 use listenfd::ListenFd;
 use tokio::net::TcpListener;
 
 struct Args {
     config: Option<PathBuf>,
     daemon: bool,
+    /// Serve every user from their own config and credentials.
+    user_config: bool,
+    listen: Option<std::net::SocketAddr>,
+    idle_timeout: Option<u64>,
     /// `login <provider>` / `logout <provider>`.
     command: Option<(String, String)>,
 }
 
 fn parse_args() -> Args {
-    let mut args = Args { config: None, daemon: false, command: None };
+    let mut args = Args {
+        config: None,
+        daemon: false,
+        user_config: false,
+        listen: None,
+        idle_timeout: None,
+        command: None,
+    };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "--config" => args.config = argv.next().map(PathBuf::from),
             "--daemon" => args.daemon = true,
+            "--user-config" => args.user_config = true,
+            "--listen" => {
+                args.listen = argv.next().and_then(|addr| addr.parse().ok());
+                if args.listen.is_none() {
+                    eprintln!("--listen needs an address like 127.0.0.1:8787");
+                    std::process::exit(2);
+                }
+            }
+            "--idle-timeout" => {
+                args.idle_timeout = argv.next().and_then(|secs| secs.parse().ok());
+                if args.idle_timeout.is_none() {
+                    eprintln!("--idle-timeout needs a number of seconds (0 disables)");
+                    std::process::exit(2);
+                }
+            }
             "login" | "logout" => match argv.next() {
                 Some(provider) => args.command = Some((arg, provider)),
                 None => {
@@ -30,11 +56,16 @@ fn parse_args() -> Args {
             },
             "--help" | "-h" => {
                 println!(
-                    "claude-router [--config <path>] [--daemon]\n\
+                    "claude-router [--config <path>] [--daemon] [--listen <addr>]\n\
+                     \x20            [--user-config] [--idle-timeout <seconds>]\n\
                      claude-router login <provider>\n\
                      claude-router logout <provider>\n\n\
-                     From a terminal: opens the TUI that configures the running daemon.\n\
-                     --daemon (or no TTY): runs the daemon itself."
+                     From a terminal: opens the TUI, which configures the running daemon.\n\
+                     --daemon (or no TTY): runs the daemon itself.\n\
+                     --user-config: serve each connecting user from their own config and\n\
+                     \x20             credentials in their home, for a machine-wide daemon.\n\
+                     --idle-timeout: exit after this many seconds without a request; pairs\n\
+                     \x20              with systemd socket activation. 0 disables."
                 );
                 std::process::exit(0);
             }
@@ -49,7 +80,7 @@ fn parse_args() -> Args {
 
 fn main() {
     let args = parse_args();
-    let config = match config::Config::load(args.config) {
+    let config = match config::Config::load(args.config.clone()) {
         Ok(config) => config,
         Err(err) => {
             eprintln!("config error: {err}");
@@ -68,7 +99,7 @@ fn main() {
 
     // Terminal launch = TUI client for the running daemon; it never listens.
     if !args.daemon && std::io::stdout().is_terminal() {
-        if let Err(err) = tui::run(&config) {
+        if let Err(err) = tui::run(Arc::new(config)) {
             eprintln!("tui error: {err}");
             std::process::exit(1);
         }
@@ -85,10 +116,10 @@ fn main() {
         .enable_all()
         .build()
         .expect("tokio runtime")
-        .block_on(serve(Arc::new(config)));
+        .block_on(serve(Arc::new(config), args));
 }
 
-async fn serve(config: Arc<config::Config>) {
+async fn serve(config: Arc<config::Config>, args: Args) {
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         // No total request timeout: SSE turns run for minutes.
@@ -109,12 +140,12 @@ async fn serve(config: Arc<config::Config>) {
             std_listener.set_nonblocking(true).expect("nonblocking");
             TcpListener::from_std(std_listener).expect("socket-activated listener")
         }
-        _ => match TcpListener::bind(config.listen).await {
+        _ => match TcpListener::bind(args.listen.unwrap_or(config.listen)).await {
             Ok(listener) => listener,
             Err(err) => {
                 eprintln!(
                     "cannot listen on {}: {err} (is another claude-router daemon running?)",
-                    config.listen
+                    args.listen.unwrap_or(config.listen)
                 );
                 std::process::exit(1);
             }
@@ -128,17 +159,41 @@ async fn serve(config: Arc<config::Config>) {
         tracing::info!(addr = %bound, uids = ?allowed, "claude-router daemon listening");
     }
     let listener = claude_code_transparent_router::peer::UidFiltered::new(listener, allowed);
-    let listen = claude_code_transparent_router::peer::PeerInfo { addr: bound, uid: None };
 
-    let state = AppState { client, config, listen: listen.addr };
+    // Serving several users means their providers and credentials come from
+    // their own homes, so nothing about them is configured machine-wide.
+    let user_configs = (args.user_config || config.user_config).then(|| {
+        tracing::info!("serving each user from their own config");
+        Arc::new(claude_code_transparent_router::user_config::UserConfigs::new(config.clone()))
+    });
+    let state = AppState { client, config: config.clone(), user_configs, listen: bound };
+
+    let idle_timeout = args
+        .idle_timeout
+        .or(config.idle_timeout_secs)
+        .filter(|secs| *secs > 0)
+        .map(Duration::from_secs);
+    let activity = idle_timeout.map(|_| claude_code_transparent_router::idle::Activity::new());
+    let app = claude_code_transparent_router::app_with_activity(state, activity.clone());
+
+    let shutdown = async move {
+        match (activity, idle_timeout) {
+            // Whichever comes first: an idle stretch, or a signal.
+            (Some(activity), Some(timeout)) => tokio::select! {
+                _ = activity.wait_until_idle(timeout) => {}
+                _ = shutdown_signal() => {}
+            },
+            _ => shutdown_signal().await,
+        }
+    };
 
     // ConnectInfo carries the verified peer uid, which is how per-user
-    // credential separation stays the kernel's answer rather than a claim.
+    // separation stays the kernel's answer rather than a claim.
     axum::serve(
         listener,
-        app(state).into_make_service_with_connect_info::<claude_code_transparent_router::peer::PeerInfo>(),
+        app.into_make_service_with_connect_info::<claude_code_transparent_router::peer::PeerInfo>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown)
     .await
     .expect("serve");
 }

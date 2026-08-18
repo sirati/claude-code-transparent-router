@@ -49,15 +49,16 @@ async fn set_tokens(
 /// consumers like the claude-routed wrapper, which turns the first line into
 /// ANTHROPIC_CUSTOM_MODEL_OPTION. Claude Code's gateway model discovery only
 /// runs with API-key auth, so OAuth sessions need this route instead.
-async fn picker(State(state): State<AppState>) -> String {
+async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
+    let config = state.config_for(uid);
     let mut rows: Vec<(bool, String)> = Vec::new();
-    for provider in &state.config.providers {
+    for provider in &config.providers {
         for model in &provider.models {
             let display = model
                 .display_name
                 .clone()
                 .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
-            let chosen = state.config.picker_model.as_deref() == Some(model.id.as_str());
+            let chosen = config.picker_model.as_deref() == Some(model.id.as_str());
             rows.push((
                 chosen,
                 format!("{}{}\t{display}\n", crate::route::ALIAS_PREFIX, model.id),
@@ -66,7 +67,7 @@ async fn picker(State(state): State<AppState>) -> String {
     }
     // Claude Code takes only one custom row, so the configured model leads;
     // without a choice the first configured model does.
-    if let Some(wanted) = &state.config.picker_model {
+    if let Some(wanted) = &config.picker_model {
         if rows.iter().any(|(chosen, _)| *chosen) {
             rows.sort_by_key(|(chosen, _)| !chosen);
         } else {
@@ -80,10 +81,10 @@ async fn providers(
     State(state): State<AppState>,
     Caller(uid): Caller,
 ) -> Json<Value> {
+    let config = state.config_for(uid);
     let credentials = state.credentials(uid);
     let tokens = state.tokens(uid);
-    let providers: Vec<Value> = state
-        .config
+    let providers: Vec<Value> = config
         .providers
         .iter()
         .map(|provider| {
@@ -125,7 +126,7 @@ async fn providers(
         .collect();
     Json(json!({
         "listen": state.listen.to_string(),
-        "config_path": state.config.config_path.as_ref().map(|p| p.display().to_string()),
+        "config_path": config.config_path.as_ref().map(|p| p.display().to_string()),
         "providers": providers,
     }))
 }

@@ -19,6 +19,8 @@ pub enum Mode {
     List,
     Entering { input: String },
     ConfirmClear,
+    /// Browser sign-in running; the URL stays on screen as the fallback.
+    LoggingIn { provider: String, url: String },
 }
 
 pub struct App {
@@ -27,6 +29,10 @@ pub struct App {
     pub selected: usize,
     pub mode: Mode,
     pub status: Option<String>,
+    /// The router's own config, for the OAuth details a login needs.
+    config: std::sync::Arc<Config>,
+    /// Result of a login running on another thread.
+    login: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 }
 
 impl App {
@@ -36,6 +42,74 @@ impl App {
 
     fn selected_provider(&self) -> Option<&client::Provider> {
         self.providers().get(self.selected)
+    }
+
+    /// Run the browser flow on a worker thread so the interface keeps
+    /// drawing, and hand the finished session to the daemon.
+    fn start_login(&mut self) {
+        let Some(provider) = self.selected_provider() else { return };
+        if !provider.oauth {
+            self.status = Some(format!(
+                "provider '{}' uses an API key; press [s] to set it",
+                provider.name
+            ));
+            return;
+        }
+        let name = provider.name.clone();
+        let Some(oauth) = self
+            .config
+            .providers
+            .iter()
+            .find(|p| p.name == name)
+            .and_then(|p| p.oauth.clone())
+        else {
+            self.status =
+                Some(format!("no OAuth settings for '{name}' in this config; cannot sign in"));
+            return;
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (url_tx, url_rx) = std::sync::mpsc::channel();
+        let daemon = self.daemon.base_url();
+        let provider_name = name.clone();
+        std::thread::spawn(move || {
+            let result = run_login(&oauth, &provider_name, &daemon, url_tx);
+            let _ = tx.send(result);
+        });
+
+        // The URL arrives as soon as the callback port is bound; a failure to
+        // bind shows up as the login result instead.
+        match url_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(url) => {
+                crate::oauth::login::open_browser(&url);
+                self.mode = Mode::LoggingIn { provider: name, url };
+                self.status = None;
+            }
+            Err(_) => self.mode = Mode::List,
+        }
+        self.login = Some(rx);
+    }
+
+    /// Pick up a finished login without blocking the interface.
+    fn poll_login(&mut self) {
+        let Some(rx) = &self.login else { return };
+        match rx.try_recv() {
+            Ok(result) => {
+                self.login = None;
+                self.mode = Mode::List;
+                self.status = Some(match result {
+                    Ok(message) => message,
+                    Err(err) => format!("login failed: {err}"),
+                });
+                self.refresh();
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.login = None;
+                self.mode = Mode::List;
+                self.status = Some("login ended unexpectedly".into());
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
     }
 
     fn refresh(&mut self) {
@@ -59,7 +133,7 @@ impl Drop for TerminalGuard {
     }
 }
 
-pub fn run(config: &Config) -> io::Result<()> {
+pub fn run(config: std::sync::Arc<Config>) -> io::Result<()> {
     let daemon = Client::new(config.listen);
     let snapshot = daemon.status();
 
@@ -72,16 +146,25 @@ pub fn run(config: &Config) -> io::Result<()> {
     )?;
     let mut term = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App { daemon, snapshot, selected: 0, mode: Mode::List, status: None };
+    let mut app = App {
+        daemon,
+        snapshot,
+        selected: 0,
+        mode: Mode::List,
+        status: None,
+        config,
+        login: None,
+    };
     let mut ticks: u32 = 0;
 
     loop {
+        app.poll_login();
         term.draw(|frame| ui::draw(frame, &app))?;
-        if !event::poll(Duration::from_millis(500))? {
+        if !event::poll(Duration::from_millis(200))? {
             // Pick up daemon-side changes (and reconnects) in the background,
             // but never mid-entry: a refresh must not eat pasted input.
             ticks += 1;
-            if ticks.is_multiple_of(4) && matches!(app.mode, Mode::List) {
+            if ticks.is_multiple_of(10) && matches!(app.mode, Mode::List) {
                 app.refresh();
             }
             continue;
@@ -101,6 +184,31 @@ pub fn run(config: &Config) -> io::Result<()> {
             _ => {}
         }
     }
+}
+
+fn run_login(
+    oauth: &crate::config::OauthConfig,
+    provider: &str,
+    daemon: &str,
+    url_tx: std::sync::mpsc::Sender<String>,
+) -> Result<String, String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("could not start the login runtime: {err}"))?;
+    runtime.block_on(async {
+        let started = crate::oauth::login::start(oauth).await?;
+        let _ = url_tx.send(started.authorize_url.clone());
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .build()
+            .map_err(|err| format!("could not build an HTTP client: {err}"))?;
+        let session = started.complete(&client, oauth).await?;
+        // The daemon owns the store its requests read from, so it takes the
+        // finished session rather than this process writing a file.
+        Client::new_from_base(daemon).set_tokens(provider, &session)?;
+        Ok(format!("signed in to '{provider}' ({})", session.preview()))
+    })
 }
 
 /// Returns true to quit (the daemon keeps running).
@@ -136,6 +244,16 @@ fn on_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) -> bool {
             }
             false
         }
+        Mode::LoggingIn { .. } => {
+            // The flow is waiting on a browser redirect; only leaving is
+            // meaningful here, and the login thread ends with it.
+            if code == KeyCode::Esc {
+                app.login = None;
+                app.mode = Mode::List;
+                app.status = Some("login cancelled".into());
+            }
+            false
+        }
         Mode::ConfirmClear => {
             if let KeyCode::Char('y') | KeyCode::Char('Y') = code {
                 let name = app.selected_provider().map(|p| p.name.clone()).unwrap_or_default();
@@ -167,12 +285,9 @@ fn on_list_key(app: &mut App, code: KeyCode) -> bool {
         }
         KeyCode::Char('s') | KeyCode::Enter if count > 0 => {
             match app.selected_provider() {
-                // The browser flow needs a terminal of its own, so the TUI
-                // points at the command rather than trying to host it.
-                Some(provider) if provider.oauth => {
-                    let name = provider.name.clone();
-                    app.status = Some(format!("run `claude-router login {name}` to sign in"));
-                }
+                // OAuth providers have nothing to paste: start the browser
+                // flow instead of asking for a key.
+                Some(provider) if provider.oauth => app.start_login(),
                 Some(_) => {
                     app.mode = Mode::Entering { input: String::new() };
                     app.status = None;
@@ -180,6 +295,7 @@ fn on_list_key(app: &mut App, code: KeyCode) -> bool {
                 None => {}
             }
         }
+        KeyCode::Char('l') if count > 0 => app.start_login(),
         KeyCode::Char('c') if count > 0 => {
             let credential = app.selected_provider().map(|p| p.credential.clone());
             match credential {

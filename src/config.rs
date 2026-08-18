@@ -24,10 +24,15 @@ struct FileConfig {
     /// either as the alias or the bare provider model ID.
     #[serde(default)]
     picker_model: Option<String>,
-    /// Keep each connecting user's credentials in their own directory, so one
-    /// system-wide daemon can serve several people without sharing keys.
+    /// Serve each connecting user from their own config and credentials in
+    /// their home directory, so one system-wide daemon carries nothing that
+    /// belongs to a particular person.
     #[serde(default)]
-    per_user_credentials: bool,
+    user_config: bool,
+    /// Exit after this many seconds without a request; pairs with socket
+    /// activation. Absent or zero keeps the daemon resident.
+    #[serde(default)]
+    idle_timeout_secs: Option<u64>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -151,8 +156,10 @@ pub struct Config {
     pub allowed_uids: Vec<u32>,
     /// Provider model ID (never the alias) to offer as the custom /model row.
     pub picker_model: Option<String>,
-    /// Credentials are stored per connecting uid rather than shared.
-    pub per_user_credentials: bool,
+    /// Serve each user from their own config file and credential store.
+    pub user_config: bool,
+    /// Idle seconds before the daemon exits; None or zero means stay.
+    pub idle_timeout_secs: Option<u64>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -248,7 +255,8 @@ impl Config {
                 }
                 uids
             },
-            per_user_credentials: file.per_user_credentials,
+            user_config: file.user_config,
+            idle_timeout_secs: file.idle_timeout_secs,
             picker_model: file.picker_model.map(|model| {
                 model.strip_prefix(crate::route::ALIAS_PREFIX).unwrap_or(&model).to_string()
             }),

@@ -14,10 +14,15 @@ pub const PROXY_ORIGIN_VALUE: &str = "claude-code-transparent-router";
 /// Forward the request to Anthropic verbatim: original method, path, query,
 /// end-to-end headers, and the exact body bytes received. The response comes
 /// back the same way, with the body streamed chunk-by-chunk untouched.
-pub async fn send(state: &AppState, parts: Parts, body: Bytes) -> Response {
+pub async fn send(
+    state: &AppState,
+    config: &crate::config::Config,
+    parts: Parts,
+    body: Bytes,
+) -> Response {
     let path_and_query =
         parts.uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
-    let url = format!("{}{}", state.config.anthropic_base, path_and_query);
+    let url = format!("{}{}", config.anthropic_base, path_and_query);
 
     let upstream = state
         .client

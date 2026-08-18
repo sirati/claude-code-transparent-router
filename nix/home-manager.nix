@@ -164,6 +164,16 @@ in
       description = "Upstream that passthrough requests are forwarded to verbatim.";
     };
 
+    idleTimeout = lib.mkOption {
+      type = lib.types.int;
+      default = 300;
+      description = ''
+        Seconds without a request before the daemon exits; the socket starts
+        it again on the next connection. A streaming turn counts as activity
+        for its whole duration. 0 keeps it resident.
+      '';
+    };
+
     restrictToOwner = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -381,20 +391,27 @@ in
     # The daemon reads this path by default, so the TUI shows the same file.
     xdg.configFile."claude-router/config.toml".source = configFile;
 
+    # Socket activation: systemd holds the port, so the daemon starts on the
+    # first request from Claude Code and exits again once idle.
+    systemd.user.sockets.claude-router = {
+      Socket.ListenStream = "127.0.0.1:${toString cfg.port}";
+      Install.WantedBy = [ "sockets.target" ];
+    };
+
     systemd.user.services.claude-router = {
       Unit = {
         Description = "Claude Code transparent router";
-        After = [ "network.target" ];
+        After = [ "network.target" "claude-router.socket" ];
+        Requires = [ "claude-router.socket" ];
         # The config is a store path, so a changed config is a changed unit
         # and home-manager restarts the daemon on switch.
         X-Config = "${configFile}";
       };
       Service = {
-        ExecStart = "${lib.getExe cfg.package} --daemon --config ${configFile}";
+        ExecStart = "${lib.getExe cfg.package} --daemon --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
         Restart = "on-failure";
         RestartSec = 2;
       };
-      Install.WantedBy = [ "default.target" ];
     };
   };
 }

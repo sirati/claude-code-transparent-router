@@ -48,6 +48,21 @@ impl Client {
         }
     }
 
+    pub fn new_from_base(base: &str) -> Self {
+        Self {
+            http: reqwest::blocking::Client::builder()
+                .connect_timeout(Duration::from_secs(2))
+                .timeout(Duration::from_secs(5))
+                .build()
+                .expect("admin client"),
+            base: base.to_string(),
+        }
+    }
+
+    pub fn base_url(&self) -> String {
+        self.base.clone()
+    }
+
     pub fn status(&self) -> Result<Status, String> {
         self.http
             .get(format!("{}/__router/providers", self.base))

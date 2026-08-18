@@ -53,13 +53,14 @@ impl ProviderAuth {
 
 pub async fn dispatch(
     state: &AppState,
+    config: &crate::config::Config,
     provider: usize,
     body: Bytes,
     real_model: String,
     counting: bool,
     uid: Option<u32>,
 ) -> Response {
-    let provider = &state.config.providers[provider];
+    let provider = &config.providers[provider];
     if counting {
         return count_tokens(&body);
     }
