@@ -1,0 +1,21 @@
+# Stands in for the home-manager daemon on the usual port while a /compact
+# capture is being taken: the normal providers, plus one that records what
+# Claude Code sends. Restore the real one with:
+#   systemctl --user start claude-router.socket
+listen = "127.0.0.1:8787"
+credentials_dir = "/home/sirati/.local/state/claude-router/credentials"
+restrict_to_owner = true
+picker_model = "test"
+
+[providers.deepseek]
+preset = "deepseek"
+
+[providers.codex]
+preset = "codex"
+
+[providers.capture]
+base_url = "http://127.0.0.1:8131"
+# Anthropic dialect: only the model name is rewritten, so the capture sees
+# Claude Code's own request.
+api = "anthropic"
+models = [{ id = "test", name = "Capture (test)" }]
