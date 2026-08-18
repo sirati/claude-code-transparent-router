@@ -42,12 +42,19 @@
             meta.mainProgram = "claude-router";
           };
           # Claude Code pointed at the router; the credential flow stays
-          # Claude Code's own. Gateway model discovery makes it fetch
-          # GET /v1/models from the router at startup, so the providers'
-          # anthropic/<id> aliases appear in the /model picker.
+          # Claude Code's own. Gateway model discovery (API-key auth only)
+          # fetches /v1/models from the router; under claude.ai OAuth it never
+          # runs, so the wrapper also asks the daemon for its picker rows and
+          # exposes the first as the single supported custom /model entry.
           claude-routed = pkgs.writeShellScriptBin "claude-routed" ''
             export ANTHROPIC_BASE_URL="''${CLAUDE_ROUTER_URL:-http://127.0.0.1:8787}"
             export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
+            entry=$(${pkgs.curl}/bin/curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/picker" | head -n1) || entry=""
+            if [ -n "$entry" ]; then
+              export ANTHROPIC_CUSTOM_MODEL_OPTION=$(printf '%s' "$entry" | cut -f1)
+              name=$(printf '%s' "$entry" | cut -f2)
+              [ -n "$name" ] && export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$name"
+            fi
             exec ${pkgs.claude-code}/bin/claude "$@"
           '';
         in

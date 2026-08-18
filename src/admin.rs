@@ -18,7 +18,26 @@ use crate::AppState;
 pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/__router/providers", get(providers))
+        .route("/__router/picker", get(picker))
         .route("/__router/credentials/{provider}", put(set_credential).delete(clear_credential))
+}
+
+/// Plain-text picker rows (`<alias>\t<display name>` per line) for shell
+/// consumers like the claude-routed wrapper, which turns the first line into
+/// ANTHROPIC_CUSTOM_MODEL_OPTION. Claude Code's gateway model discovery only
+/// runs with API-key auth, so OAuth sessions need this route instead.
+async fn picker(State(state): State<AppState>) -> String {
+    let mut out = String::new();
+    for provider in &state.config.providers {
+        for model in &provider.models {
+            let display = model
+                .display_name
+                .clone()
+                .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
+            out.push_str(&format!("{}{}\t{display}\n", crate::route::ALIAS_PREFIX, model.id));
+        }
+    }
+    out
 }
 
 async fn providers(State(state): State<AppState>) -> Json<Value> {
