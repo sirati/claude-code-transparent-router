@@ -18,6 +18,9 @@ pub struct Provider {
     pub name: String,
     pub base_url: String,
     pub models: Vec<String>,
+    /// Signs in with a browser rather than a pasted key.
+    #[serde(default)]
+    pub oauth: bool,
     pub credential: Credential,
 }
 

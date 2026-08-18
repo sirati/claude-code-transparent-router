@@ -2,8 +2,9 @@
 
 Loopback HTTP router for Claude Code. Anthropic models pass through to
 `api.anthropic.com` unchanged; models aliased as `anthropic/<id>` are routed
-to second providers — either their Anthropic-compatible endpoints
-(near-passthrough) or OpenAI-compatible ones (full Messages translation).
+to second providers, in three dialects: Anthropic-compatible endpoints
+(near-passthrough), OpenAI chat-completions, and the OpenAI Responses API —
+the last with API-key or OAuth authentication.
 
 ## Behavior
 
@@ -71,9 +72,32 @@ mapping. Anything you write alongside it wins, key by key (arrays replace
 rather than merge), so `preset` plus a `base_url` override points the same
 model set at a different host. Credentials never come from a preset.
 
-Available: `deepseek` (Anthropic-format endpoint, both `deepseek-v4-pro` and
-`deepseek-v4-flash`). Adding one is a new file in `presets/` plus a line in
-the registry.
+Available:
+
+- `deepseek` — Anthropic-format endpoint, `deepseek-v4-pro` and
+  `deepseek-v4-flash`, API key.
+- `codex` — the ChatGPT backend's Responses endpoint with the OAuth login
+  flow published in [openai/codex](https://github.com/openai/codex)
+  (Apache-2.0); GPT-5.6 Sol/Terra/Luna. Uses the signed-in account's Codex
+  allowance rather than metered API billing — check your plan's terms.
+
+Adding one is a new file in `presets/` plus a line in the registry.
+
+### Logins
+
+Providers with an `[oauth]` block sign in with a browser instead of a pasted
+key:
+
+```console
+$ claude-router login codex     # opens the browser, stores the session
+$ claude-router logout codex
+```
+
+Tokens are stored beside the API keys (mode 0600) and refreshed
+automatically five minutes before they expire. The flow is generic
+authorization-code + PKCE: issuer, client id, scopes, callback port,
+authorize parameters, the account-id claim and its header all come from
+config, so another OAuth provider is a preset file rather than a code change.
 
 `api` selects the provider's dialect: `"anthropic"` endpoints get
 near-passthrough (only the model ID is rewritten and the credential swapped),

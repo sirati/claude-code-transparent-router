@@ -166,8 +166,19 @@ fn on_list_key(app: &mut App, code: KeyCode) -> bool {
             app.selected = (app.selected + 1) % count;
         }
         KeyCode::Char('s') | KeyCode::Enter if count > 0 => {
-            app.mode = Mode::Entering { input: String::new() };
-            app.status = None;
+            match app.selected_provider() {
+                // The browser flow needs a terminal of its own, so the TUI
+                // points at the command rather than trying to host it.
+                Some(provider) if provider.oauth => {
+                    let name = provider.name.clone();
+                    app.status = Some(format!("run `claude-router login {name}` to sign in"));
+                }
+                Some(_) => {
+                    app.mode = Mode::Entering { input: String::new() };
+                    app.status = None;
+                }
+                None => {}
+            }
         }
         KeyCode::Char('c') if count > 0 => {
             let credential = app.selected_provider().map(|p| p.credential.clone());

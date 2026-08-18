@@ -46,17 +46,39 @@ async fn providers(State(state): State<AppState>) -> Json<Value> {
         .providers
         .iter()
         .map(|provider| {
-            let source = state.credentials.source(&provider.name);
+            // OAuth providers are described by their stored session; API-key
+            // providers by the credential store.
+            let credential = match provider.oauth.is_some() {
+                true => match state.tokens.get(&provider.name) {
+                    Some(tokens) => json!({
+                        "set": true,
+                        "source": "login",
+                        "preview": tokens.preview(),
+                        "can_clear": true,
+                    }),
+                    None => json!({
+                        "set": false,
+                        "source": format!("not signed in - run: claude-router login {}", provider.name),
+                        "preview": Value::Null,
+                        "can_clear": false,
+                    }),
+                },
+                false => {
+                    let source = state.credentials.source(&provider.name);
+                    json!({
+                        "set": !matches!(source, Source::Unset),
+                        "source": source.label(),
+                        "preview": state.credentials.preview(&provider.name),
+                        "can_clear": matches!(source, Source::File),
+                    })
+                }
+            };
             json!({
                 "name": provider.name,
                 "base_url": provider.base_url,
                 "models": provider.models.iter().map(|m| m.id.clone()).collect::<Vec<_>>(),
-                "credential": {
-                    "set": !matches!(source, Source::Unset),
-                    "source": source.label(),
-                    "preview": state.credentials.preview(&provider.name),
-                    "can_clear": matches!(source, Source::File),
-                },
+                "oauth": provider.oauth.is_some(),
+                "credential": credential,
             })
         })
         .collect();
@@ -80,6 +102,13 @@ async fn set_credential(
     if !known(&state, &provider) {
         return (StatusCode::NOT_FOUND, format!("unknown provider '{provider}'")).into_response();
     }
+    if is_oauth(&state, &provider) {
+        return (
+            StatusCode::CONFLICT,
+            format!("provider '{provider}' signs in with a browser; run: claude-router login {provider}"),
+        )
+            .into_response();
+    }
     let key = body.key.trim();
     if key.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty key").into_response();
@@ -100,6 +129,13 @@ async fn clear_credential(
     if !known(&state, &provider) {
         return (StatusCode::NOT_FOUND, format!("unknown provider '{provider}'")).into_response();
     }
+    if is_oauth(&state, &provider) {
+        return match state.tokens.clear(&provider) {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to sign out: {err}"))
+                .into_response(),
+        };
+    }
     match state.credentials.source(&provider) {
         // Idempotent: clearing an unset credential succeeds.
         Source::File | Source::Unset => match state.credentials.clear(&provider) {
@@ -119,4 +155,8 @@ async fn clear_credential(
 
 fn known(state: &AppState, provider: &str) -> bool {
     state.config.providers.iter().any(|p| p.name == provider)
+}
+
+fn is_oauth(state: &AppState, provider: &str) -> bool {
+    state.config.providers.iter().any(|p| p.name == provider && p.oauth.is_some())
 }
