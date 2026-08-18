@@ -22,6 +22,30 @@ struct FileProvider {
     api: Option<ApiFormat>,
     #[serde(default)]
     models: Vec<FileModel>,
+    #[serde(default)]
+    effort: Option<EffortConfig>,
+}
+
+/// How a provider expresses reasoning effort. Claude Code sends Anthropic's
+/// `output_config.effort`; providers spell it differently and accept a
+/// different set of levels, so both the destination field and the level
+/// mapping are configuration, never built into the router.
+#[derive(Deserialize, Debug)]
+pub struct EffortConfig {
+    /// Dotted JSON path in the outgoing body, e.g. `reasoning.effort` or
+    /// `reasoning_effort`.
+    pub field: String,
+    /// Inbound level -> provider level. Levels absent here fall back to
+    /// `default`; with no default the field is left unset.
+    #[serde(default)]
+    pub map: BTreeMap<String, String>,
+    /// Used when the request carries no effort, or an unmapped one.
+    #[serde(default)]
+    pub default: Option<String>,
+    /// Top-level request keys to drop, for providers that would otherwise
+    /// see two conflicting effort spellings.
+    #[serde(default)]
+    pub remove: Vec<String>,
 }
 
 /// Which API dialect the provider speaks. `anthropic` providers get
@@ -61,6 +85,7 @@ pub struct ProviderConfig {
     pub api: ApiFormat,
     /// Real upstream models, served in /v1/models as `anthropic/<id>`.
     pub models: Vec<Model>,
+    pub effort: Option<EffortConfig>,
 }
 
 pub struct Model {
@@ -98,6 +123,7 @@ impl Config {
                 name,
                 base_url: p.base_url.trim_end_matches('/').to_string(),
                 api: p.api.unwrap_or(ApiFormat::Openai),
+                effort: p.effort,
                 models: p
                     .models
                     .into_iter()

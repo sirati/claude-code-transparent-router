@@ -2,6 +2,7 @@ pub mod admin;
 pub mod catalog;
 pub mod config;
 pub mod credentials;
+pub mod effort;
 pub mod headers;
 pub mod passthrough;
 pub mod providers;

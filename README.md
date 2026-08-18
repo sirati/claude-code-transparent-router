@@ -74,6 +74,28 @@ the display name shown in Claude Code's model switcher.
 Model IDs must be unique across providers, since aliases don't carry the
 provider name.
 
+### Reasoning effort
+
+Claude Code sends the session (or subagent) effort level as
+`output_config.effort`. Providers spell that field differently and accept
+different levels, so an optional per-provider `effort` block translates it —
+the router itself knows no provider-specific levels:
+
+```toml
+[providers.example.effort]
+field = "reasoning_effort"          # dotted path in the outgoing body
+default = "high"                    # used when unset or unmapped
+remove = ["output_config"]          # keys to drop before sending
+map = { low = "low", medium = "high", high = "high", xhigh = "high", max = "max" }
+```
+
+Without an `effort` block the field is forwarded untouched — correct for
+Anthropic-format endpoints that already accept Anthropic's own spelling.
+Levels absent from `map` fall back to `default`; with no default the field is
+left alone. Use it to pin a level (`default` with an empty `map`), collapse
+levels a provider doesn't distinguish, or move the value to an
+OpenAI-style `reasoning_effort`.
+
 Credentials are not part of the config file. They resolve per provider, in
 order:
 

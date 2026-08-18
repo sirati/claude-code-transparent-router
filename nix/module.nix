@@ -12,7 +12,7 @@ let
       base_url = p.baseUrl;
       api = p.api;
       models = map (m: if builtins.isString m then m else { inherit (m) id name; }) p.models;
-    }) cfg.providers;
+    } // lib.optionalAttrs (p.effort != null) { effort = p.effort; }) cfg.providers;
   };
 
   providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
@@ -94,6 +94,45 @@ in
             default = [ ];
             example = [ { id = "some-model-id"; name = "Some Model Pro"; } ];
             description = "Upstream models to expose: bare IDs or { id, name }.";
+          };
+
+          effort = lib.mkOption {
+            default = null;
+            example = {
+              field = "reasoning.effort";
+              default = "high";
+              remove = [ "output_config" ];
+              map = { low = "low"; medium = "high"; high = "high"; xhigh = "high"; max = "max"; };
+            };
+            description = ''
+              How to translate Claude Code's reasoning effort
+              (`output_config.effort`) for this provider. Null forwards the
+              request unchanged.
+            '';
+            type = lib.types.nullOr (lib.types.submodule {
+              options = {
+                field = lib.mkOption {
+                  type = lib.types.str;
+                  example = "reasoning.effort";
+                  description = "Dotted JSON path the level is written to.";
+                };
+                map = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.str;
+                  default = { };
+                  description = "Claude Code level -> provider level.";
+                };
+                default = lib.mkOption {
+                  type = lib.types.nullOr lib.types.str;
+                  default = null;
+                  description = "Level used when the request has none, or an unmapped one.";
+                };
+                remove = lib.mkOption {
+                  type = lib.types.listOf lib.types.str;
+                  default = [ ];
+                  description = "Top-level request keys to drop before sending.";
+                };
+              };
+            });
           };
 
           apiKeyFile = lib.mkOption {

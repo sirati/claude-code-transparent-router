@@ -8,3 +8,9 @@ models = ["alpha-model", "alpha-model-mini"]
 base_url = "http://beta.example/v1/"
 api = "anthropic"
 models = [{ id = "beta-model", name = "Beta Model Pro" }]
+
+[providers.beta.effort]
+field = "reasoning.effort"
+default = "high"
+remove = ["output_config"]
+map = { low = "low", medium = "high", high = "high", xhigh = "high", max = "max" }

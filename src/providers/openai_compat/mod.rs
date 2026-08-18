@@ -29,7 +29,12 @@ pub async fn messages(
     // provider-internal ID.
     let alias = anthropic_req["model"].as_str().unwrap_or(&real_model).to_string();
     let streaming = anthropic_req["stream"].as_bool().unwrap_or(false);
-    let openai_req = request::to_openai(&anthropic_req, &real_model, streaming);
+    let mut openai_req = request::to_openai(&anthropic_req, &real_model, streaming);
+    if let Some(level) =
+        crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut openai_req)
+    {
+        tracing::debug!(provider = provider.name, effort = level, "effort mapped");
+    }
 
     // Fresh header map, never the inbound one: the Anthropic credential
     // cannot reach this provider.

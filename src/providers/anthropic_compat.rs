@@ -24,6 +24,10 @@ pub async fn messages(
         Err(err) => return proxy_error(&format!("request body is not valid JSON: {err}")),
     };
     request["model"] = json!(real_model);
+    let source = request.clone();
+    if let Some(level) = crate::effort::apply(provider.effort.as_ref(), &source, &mut request) {
+        tracing::debug!(provider = provider.name, effort = level, "effort mapped");
+    }
 
     // Fresh header map, never the inbound one: the Anthropic credential
     // cannot reach this provider. Both auth conventions are sent because
