@@ -137,13 +137,20 @@ pub enum ApiFormat {
     Responses,
 }
 
-/// A model entry: either a bare upstream ID, or an ID plus the display name
-/// shown in Claude Code's model switcher.
+/// A model entry: a bare upstream ID, or an ID with a display name for the
+/// model switcher and shorthands to select it by.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum FileModel {
     Id(String),
-    Named { id: String, name: String },
+    Full {
+        id: String,
+        #[serde(default)]
+        name: Option<String>,
+        /// Shorter names for the same model, e.g. `sol` for `gpt-5.6-sol`.
+        #[serde(default)]
+        aliases: Vec<String>,
+    },
 }
 
 pub struct Config {
@@ -181,6 +188,20 @@ pub struct ProviderConfig {
 pub struct Model {
     pub id: String,
     pub display_name: Option<String>,
+    /// Shorthands that select this model, alongside its ID.
+    pub aliases: Vec<String>,
+}
+
+impl Model {
+    /// Does `name` select this model? Its ID or any of its shorthands do.
+    pub fn matches(&self, name: &str) -> bool {
+        self.id == name || self.aliases.iter().any(|alias| alias == name)
+    }
+
+    /// Every name this model answers to.
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.id.as_str()).chain(self.aliases.iter().map(String::as_str))
+    }
 }
 
 impl Config {
@@ -231,8 +252,12 @@ impl Config {
                     .models
                     .into_iter()
                     .map(|m| match m {
-                        FileModel::Id(id) => Model { id, display_name: None },
-                        FileModel::Named { id, name } => Model { id, display_name: Some(name) },
+                        FileModel::Id(id) => {
+                            Model { id, display_name: None, aliases: Vec::new() }
+                        }
+                        FileModel::Full { id, name, aliases } => {
+                            Model { id, display_name: name, aliases }
+                        }
                     })
                     .collect(),
             })
@@ -257,9 +282,7 @@ impl Config {
             },
             user_config: file.user_config,
             idle_timeout_secs: file.idle_timeout_secs,
-            picker_model: file.picker_model.map(|model| {
-                model.strip_prefix(crate::route::ALIAS_PREFIX).unwrap_or(&model).to_string()
-            }),
+            picker_model: file.picker_model,
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
         })
@@ -270,17 +293,20 @@ impl Config {
     }
 }
 
-/// Model aliases carry no provider name, so a model ID listed by two
-/// providers would be ambiguous to route.
+/// A bare model name selects one model, so IDs and shorthands have to be
+/// unique across providers; otherwise `/model sol` would be a coin toss.
 fn check_unique_models(providers: &[ProviderConfig]) -> Result<(), String> {
     let mut seen: BTreeMap<&str, &str> = BTreeMap::new();
     for provider in providers {
         for model in &provider.models {
-            if let Some(other) = seen.insert(&model.id, &provider.name) {
-                return Err(format!(
-                    "model '{}' is listed by both '{other}' and '{}'; model IDs must be unique across providers",
-                    model.id, provider.name
-                ));
+            for name in model.names() {
+                if let Some(other) = seen.insert(name, &provider.name) {
+                    return Err(format!(
+                        "'{name}' is claimed by both '{other}' and '{}'; \
+                         model IDs and shorthands must be unique across providers",
+                        provider.name
+                    ));
+                }
             }
         }
     }

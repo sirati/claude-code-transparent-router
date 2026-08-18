@@ -6,10 +6,12 @@
 # before pointing another client at it.
 base_url = "https://chatgpt.com/backend-api/codex"
 api = "responses"
+# Shorthands select the newest model of that line, so `/model sol` keeps
+# working across a version bump while `sol-5.6` stays exact.
 models = [
-  { id = "gpt-5.6-sol", name = "GPT-5.6 Sol" },
-  { id = "gpt-5.6-terra", name = "GPT-5.6 Terra" },
-  { id = "gpt-5.6-luna", name = "GPT-5.6 Luna" },
+  { id = "gpt-5.6-sol", name = "GPT-5.6 Sol", aliases = ["sol", "sol-5.6"] },
+  { id = "gpt-5.6-terra", name = "GPT-5.6 Terra", aliases = ["terra", "terra-5.6"] },
+  { id = "gpt-5.6-luna", name = "GPT-5.6 Luna", aliases = ["luna", "luna-5.6"] },
 ]
 
 [oauth]

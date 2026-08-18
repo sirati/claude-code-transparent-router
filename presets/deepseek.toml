@@ -5,9 +5,11 @@
 # Credential: set it in the router TUI, or DEEPSEEK_API_KEY.
 base_url = "https://api.deepseek.com/anthropic"
 api = "anthropic"
+# Shorthands select the newest model of that line, so `/model pro` keeps
+# working across a version bump while `pro-v4` stays exact.
 models = [
-  { id = "deepseek-v4-pro", name = "DeepSeek 4 Pro" },
-  { id = "deepseek-v4-flash", name = "DeepSeek 4 Flash" },
+  { id = "deepseek-v4-pro", name = "DeepSeek 4 Pro", aliases = ["pro", "pro-v4"] },
+  { id = "deepseek-v4-flash", name = "DeepSeek 4 Flash", aliases = ["flash", "flash-v4"] },
 ]
 
 [effort]

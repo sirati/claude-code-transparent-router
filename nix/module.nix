@@ -122,7 +122,7 @@ in
     pickerModel = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "anthropic/deepseek-v4-pro";
+      example = "deepseek/pro";
       description = ''
         Which routed model fills Claude Code's `/model` picker. Claude Code
         supports exactly one custom entry, so this picks it; the others stay

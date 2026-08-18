@@ -21,7 +21,7 @@ home-manager.sharedModules = [ inputs.claude-router.homeManagerModules.default ]
 services.claude-router = {
   enable = true;
   wrapperName = "claude";        # install the wrapper as `claude`
-  pickerModel = "anthropic/deepseek-v4-pro";
+  pickerModel = "deepseek/pro";
 
   providers = {
     deepseek.preset = "deepseek";
@@ -59,7 +59,7 @@ services.claude-router = {
   agentDirs = [ ".claude" ".claudeB" ];   # a machine may carry several
   agents.flash = {
     provider = "deepseek";
-    model = "deepseek-v4-flash";
+    model = "flash";               # ID or a preset shorthand
     description = "Cheap, fast helper for mechanical edits.";
     effort = "low";
     tools = [ "Read" "Grep" "Glob" ];
@@ -69,7 +69,9 @@ services.claude-router = {
 ```
 
 `provider` and `model` are checked against your configured providers when you
-build, so a typo fails the rebuild rather than a conversation.
+build, so a typo fails the rebuild rather than a conversation. Models can be
+selected by full ID, by shorthand, or qualified: `/model sol`, `codex/sol`,
+`gpt-5.6-sol`.
 
 ## Shared machines
 

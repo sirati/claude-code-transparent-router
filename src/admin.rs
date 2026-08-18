@@ -45,6 +45,12 @@ async fn set_tokens(
     }
 }
 
+/// `anthropic/x`, `provider/x` and plain `x` all name the same model, so a
+/// configured choice is compared on the last segment.
+fn strip_qualifier(model: &str) -> &str {
+    model.rsplit('/').next().unwrap_or(model)
+}
+
 /// Plain-text picker rows (`<alias>\t<display name>` per line) for shell
 /// consumers like the claude-routed wrapper, which turns the first line into
 /// ANTHROPIC_CUSTOM_MODEL_OPTION. Claude Code's gateway model discovery only
@@ -58,11 +64,15 @@ async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
                 .display_name
                 .clone()
                 .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
-            let chosen = config.picker_model.as_deref() == Some(model.id.as_str());
-            rows.push((
-                chosen,
-                format!("{}{}\t{display}\n", crate::route::ALIAS_PREFIX, model.id),
-            ));
+            let chosen = config
+                .picker_model
+                .as_deref()
+                .is_some_and(|wanted| model.matches(strip_qualifier(wanted)));
+            // The custom picker entry skips ID validation, so it gets the
+            // readable name rather than the discovery prefix — this is what
+            // Claude Code shows next to the model in /model.
+            let shorthand = model.aliases.first().map(String::as_str).unwrap_or(&model.id);
+            rows.push((chosen, format!("{}/{shorthand}\t{display}\n", provider.name)));
         }
     }
     // Claude Code takes only one custom row, so the configured model leads;

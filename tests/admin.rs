@@ -111,8 +111,9 @@ async fn picker_model_leads_the_row_list() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let body = String::from_utf8(bytes.to_vec()).unwrap();
 
+    // Rows carry the readable provider/shorthand form, not the discovery prefix.
     let first = body.lines().next().unwrap();
-    assert_eq!(first, "anthropic/beta-model\tBeta Model Pro");
+    assert_eq!(first, "beta/beta-pro\tBeta Model Pro");
     // Every model still appears; only the order changes.
     assert_eq!(body.lines().count(), 3);
     let _ = std::fs::remove_dir_all(&dir);

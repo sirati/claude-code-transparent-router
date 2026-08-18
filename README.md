@@ -19,9 +19,12 @@ Anthropic Messages API and that provider's own.
 - **Anthropic untouched.** Original bytes and headers, unbuffered streaming,
   no retries and no added timeout, so Claude Code's own backoff and
   rate-limit handling still work.
+- **Short model names.** Select a model as `/model sol`, `codex/sol`, or its
+  full `gpt-5.6-sol` — shorthands come from the preset and follow the newest
+  version of that line.
 - **Agents beyond the picker.** Claude Code shows one custom model; you pick
-  which. The rest stay reachable by ID, or as generated subagents that name a
-  routed model in their frontmatter.
+  which. The rest stay reachable by name, or as generated subagents that name
+  a routed model in their frontmatter.
 - **Per-user credentials.** Run `claude-router` for a TUI to manage them; they
   are never shared between users and never written to the config file.
 - **Effort mapping.** Claude Code's reasoning effort is translated to each
@@ -43,7 +46,7 @@ passthrough.
 
 ```toml
 listen = "127.0.0.1:8787"                   # optional
-picker_model = "anthropic/deepseek-v4-pro"  # which model fills /model
+picker_model = "deepseek/pro"                # which model fills /model
 restrict_to_owner = true                    # only this user may connect
 idle_timeout_secs = 300                     # exit when unused; 0 to stay
 
@@ -55,9 +58,9 @@ base_url = "https://api.z.ai/api/paas/v4"
 models = ["glm-4.7"]
 ```
 
-Model IDs must be unique across providers, since an alias does not carry the
-provider name. Credentials go in the TUI or `claude-router login <provider>`,
-never here.
+Model IDs and shorthands must be unique across providers, so that a bare name
+selects exactly one model; a mistake is reported at startup. Credentials go in
+the TUI or `claude-router login <provider>`, never here.
 
 ## Development
 

@@ -38,13 +38,10 @@ let
     routerUrl = "http://127.0.0.1:${toString cfg.port}";
   };
 
-  # Routed models are offered to Claude Code as `anthropic/<id>`; the prefix
-  # is an artefact of the picker's filter, so config states the provider and
-  # the model separately and this puts them together.
-  aliasPrefix = "anthropic/";
-
+  # Agents name a provider and a model; the router accepts that spelling
+  # directly, so no `anthropic/` prefix is involved.
   agentModel = agent:
-    if agent.provider == null then agent.model else "${aliasPrefix}${agent.model}";
+    if agent.provider == null then agent.model else "${agent.provider}/${agent.model}";
 
   # A preset's model list lives in its TOML, so read it back to validate
   # agents against providers that were configured with nothing but a preset.
@@ -54,15 +51,15 @@ let
       file = ../presets + "/${preset}.toml";
       parsed = builtins.fromTOML (builtins.readFile file);
     in
-    if builtins.pathExists file then
-      map (m: if builtins.isString m then m else m.id) (parsed.models or [ ])
-    else
-      [ ];
+    if builtins.pathExists file then modelNames (parsed.models or [ ]) else [ ];
+
+  # Every name a model answers to: its ID and its shorthands.
+  modelNames = lib.concatMap (
+    m: if builtins.isString m then [ m ] else [ m.id ] ++ (m.aliases or [ ])
+  );
 
   providerModels =
-    p:
-    map (m: if builtins.isString m then m else m.id) p.models
-    ++ lib.optionals (p.preset != null) (presetModels p.preset);
+    p: modelNames p.models ++ lib.optionals (p.preset != null) (presetModels p.preset);
 
   # Claude Code's picker holds exactly one custom entry, but a subagent's
   # frontmatter can name any model — so agents are how the other routed
@@ -187,12 +184,12 @@ in
     pickerModel = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "anthropic/deepseek-v4-pro";
+      example = "deepseek/pro";
       description = ''
-        Which routed model fills Claude Code's `/model` picker. Only one
-        custom entry is supported by Claude Code, so this picks it; the rest
-        stay reachable through `--model`, `/model <id>`, and agents. Accepts
-        the alias or the bare provider model ID. Defaults to the first
+        Which routed model fills Claude Code's `/model` picker. Claude Code
+        supports one custom entry, so this picks it; the rest stay reachable
+        through `--model`, `/model <name>`, and agents. Accepts an ID, a
+        shorthand, or either qualified by provider. Defaults to the first
         configured model.
       '';
     };
@@ -241,10 +238,10 @@ in
 
           model = lib.mkOption {
             type = lib.types.str;
-            example = "deepseek-v4-flash";
+            example = "flash";
             description = ''
-              Upstream model ID including its version, without the
-              `anthropic/` routing prefix.
+              The provider's model: its upstream ID, or a shorthand the
+              provider defines (`flash` for `deepseek-v4-flash`).
             '';
           };
 

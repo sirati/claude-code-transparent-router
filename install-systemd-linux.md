@@ -20,7 +20,7 @@ $ install -Dm755 target/release/claude-router ~/.local/bin/claude-router
 
 ```toml
 restrict_to_owner = true                    # only your uid may connect
-picker_model = "anthropic/deepseek-v4-pro"  # which model fills /model
+picker_model = "deepseek/pro"                # which model fills /model
 
 [providers.deepseek]
 preset = "deepseek"
@@ -155,7 +155,7 @@ The models that did not win the picker slot stay selectable as subagents.
 ---
 name: flash
 description: Cheap, fast helper for mechanical edits.
-model: anthropic/deepseek-v4-flash
+model: deepseek/flash
 effort: low
 tools: Read, Grep, Glob
 ---

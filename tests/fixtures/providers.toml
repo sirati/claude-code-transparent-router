@@ -7,7 +7,7 @@ models = ["alpha-model", "alpha-model-mini"]
 [providers.beta]
 base_url = "http://beta.example/v1/"
 api = "anthropic"
-models = [{ id = "beta-model", name = "Beta Model Pro" }]
+models = [{ id = "beta-model", name = "Beta Model Pro", aliases = ["beta-pro"] }]
 
 [providers.beta.effort]
 field = "reasoning.effort"

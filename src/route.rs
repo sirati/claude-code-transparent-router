@@ -2,16 +2,18 @@ use serde::Deserialize;
 
 use crate::config::Config;
 
-/// Model IDs must start with `claude` or `anthropic` to survive Claude Code's
-/// discovery filter, so provider models are aliased as `anthropic/<real-id>`.
-/// Genuine Anthropic IDs are `claude-*`; the prefix cannot collide.
+/// Claude Code's gateway discovery drops models whose ID does not mention
+/// `claude` or `anthropic`, so `/v1/models` advertises this prefix. Nothing
+/// else needs it: `--model`, `/model <id>`, agent frontmatter and the custom
+/// picker entry all take an ID verbatim, which is why the friendlier
+/// `<provider>/<model>` and bare shorthands work everywhere too.
 pub const ALIAS_PREFIX: &str = "anthropic/";
 
 pub enum Backend {
     Anthropic,
     Provider { provider: usize, real_model: String },
-    /// `anthropic/<x>` where no configured provider lists `<x>`: forwarding it
-    /// would produce a confusing upstream 404, so it gets a clear local error.
+    /// A name that looks like it meant a routed model but matched nothing.
+    /// Forwarding it would produce a confusing upstream 404.
     UnknownAlias { model: String },
 }
 
@@ -27,13 +29,57 @@ pub fn route(config: &Config, body: &[u8]) -> Backend {
     let Ok(Peek { model: Some(model) }) = serde_json::from_slice::<Peek>(body) else {
         return Backend::Anthropic;
     };
-    let Some(real) = model.strip_prefix(ALIAS_PREFIX).filter(|m| !m.is_empty()) else {
-        return Backend::Anthropic;
-    };
-    match config.provider_for_model(real) {
-        Some(provider) => Backend::Provider { provider, real_model: real.to_string() },
-        None => Backend::UnknownAlias { model: model.clone() },
+    resolve(config, &model)
+}
+
+/// Accepted spellings, in order:
+///
+/// - `anthropic/<model>` — what `/v1/models` advertises
+/// - `<provider>/<model>` — e.g. `deepseek/v4-pro`
+/// - `<model>` — a bare ID or shorthand, e.g. `sol`
+///
+/// In every form `<model>` may be the upstream ID or one of its shorthands.
+/// Anything else is Anthropic's to answer.
+pub fn resolve(config: &Config, model: &str) -> Backend {
+    if let Some(rest) = model.strip_prefix(ALIAS_PREFIX) {
+        return match find(config, None, rest) {
+            Some(backend) => backend,
+            None => Backend::UnknownAlias { model: model.to_string() },
+        };
     }
+
+    if let Some((provider, rest)) = model.split_once('/') {
+        return match find(config, Some(provider), rest) {
+            Some(backend) => backend,
+            // A provider-qualified name that matched nothing is a mistake
+            // worth reporting, but only when the prefix really is one of
+            // ours — other slashed IDs belong upstream.
+            None if config.providers.iter().any(|p| p.name == provider) => {
+                Backend::UnknownAlias { model: model.to_string() }
+            }
+            None => Backend::Anthropic,
+        };
+    }
+
+    // A bare name only routes when it actually names a configured model, so
+    // Anthropic's own IDs are never captured.
+    find(config, None, model).unwrap_or(Backend::Anthropic)
+}
+
+fn find(config: &Config, provider_name: Option<&str>, model: &str) -> Option<Backend> {
+    config.providers.iter().enumerate().find_map(|(index, provider)| {
+        if provider_name.is_some_and(|name| name != provider.name) {
+            return None;
+        }
+        provider
+            .models
+            .iter()
+            .find(|candidate| candidate.matches(model))
+            .map(|candidate| Backend::Provider {
+                provider: index,
+                real_model: candidate.id.clone(),
+            })
+    })
 }
 
 #[cfg(test)]
@@ -47,31 +93,51 @@ mod tests {
         Config::load(Some(fixture("providers.toml"))).unwrap()
     }
 
-    #[test]
-    fn aliased_models_route_to_their_provider() {
-        match route(&config(), br#"{"model":"anthropic/beta-model"}"#) {
-            Backend::Provider { provider, real_model } => {
-                assert_eq!(provider, 1);
-                assert_eq!(real_model, "beta-model");
-            }
-            _ => panic!("expected provider"),
+    fn routed(model: &str) -> Option<(usize, String)> {
+        match resolve(&config(), model) {
+            Backend::Provider { provider, real_model } => Some((provider, real_model)),
+            _ => None,
         }
     }
 
     #[test]
-    fn claude_model_passes_through() {
-        assert!(matches!(
-            route(&config(), br#"{"model":"claude-sonnet-5"}"#),
-            Backend::Anthropic
-        ));
+    fn accepts_the_discovery_prefix() {
+        assert_eq!(routed("anthropic/beta-model"), Some((1, "beta-model".into())));
     }
 
     #[test]
-    fn unknown_alias_is_flagged() {
-        assert!(matches!(
-            route(&config(), br#"{"model":"anthropic/nope"}"#),
-            Backend::UnknownAlias { .. }
-        ));
+    fn accepts_provider_qualified_names() {
+        assert_eq!(routed("beta/beta-model"), Some((1, "beta-model".into())));
+        assert_eq!(routed("alpha/alpha-model"), Some((0, "alpha-model".into())));
+    }
+
+    #[test]
+    fn accepts_shorthands_in_every_form() {
+        // The fixture gives beta-model the shorthand "beta-pro".
+        assert_eq!(routed("beta-pro"), Some((1, "beta-model".into())));
+        assert_eq!(routed("beta/beta-pro"), Some((1, "beta-model".into())));
+        assert_eq!(routed("anthropic/beta-pro"), Some((1, "beta-model".into())));
+    }
+
+    #[test]
+    fn accepts_a_bare_model_id() {
+        assert_eq!(routed("alpha-model"), Some((0, "alpha-model".into())));
+    }
+
+    #[test]
+    fn anthropic_models_are_never_captured() {
+        let config = config();
+        assert!(matches!(resolve(&config, "claude-sonnet-5"), Backend::Anthropic));
+        assert!(matches!(resolve(&config, "claude-opus-4-5"), Backend::Anthropic));
+        // A slashed ID whose prefix is not one of ours belongs upstream.
+        assert!(matches!(resolve(&config, "bedrock/anthropic.claude-v2"), Backend::Anthropic));
+    }
+
+    #[test]
+    fn mistakes_in_our_own_namespaces_are_reported() {
+        let config = config();
+        assert!(matches!(resolve(&config, "anthropic/nope"), Backend::UnknownAlias { .. }));
+        assert!(matches!(resolve(&config, "beta/nope"), Backend::UnknownAlias { .. }));
     }
 
     #[test]
