@@ -124,11 +124,15 @@ mod tests {
         assert_eq!(passwd_home(1000, "garbage\n\n:::::\n"), None);
     }
 
+    /// Resolution has to work against the real system, not just the parser.
+    /// It deliberately does not compare against `$HOME`: the environment can
+    /// disagree with passwd (a build sandbox does), and passwd is the answer
+    /// the daemon needs for someone else's uid.
     #[test]
     fn resolves_this_users_home() {
         let uid = crate::peer::own_uid().unwrap();
         let home = home_dir(uid).expect("our own home should resolve");
-        assert_eq!(Some(home.as_path()), std::env::var_os("HOME").as_ref().map(std::path::Path::new));
+        assert!(home.is_absolute(), "{home:?} should be an absolute path");
     }
 
     #[test]
