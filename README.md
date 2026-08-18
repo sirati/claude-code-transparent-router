@@ -1,67 +1,74 @@
 # claude-code-transparent-router
 
-A loopback HTTP router for Claude Code. It puts other providers' models in
-the model picker while Anthropic traffic passes through untouched.
+A loopback HTTP router for Claude Code. Point Claude Code at it instead of
+`api.anthropic.com` and models from other providers appear in the model
+picker, while Anthropic traffic is forwarded byte for byte.
 
-Claude Code points at the router instead of `api.anthropic.com`. Requests for
-Anthropic models are forwarded byte for byte. Requests for models aliased as
-`anthropic/<id>` go to a configured provider, translating between the
-Anthropic Messages API and that provider's own.
+## Features
 
-## What it does
+- Use other providers' models in Claude Code.
+- Use a ChatGPT subscription instead of metered API billing.
+- Reach several routed models, despite Claude Code's single custom picker
+  slot.
+- Serve several users from one daemon, each with their own providers and
+  credentials.
+- Anthropic models keep working unchanged: same bytes, same streaming, same
+  rate-limit handling.
 
-- **Other providers in Claude Code.** DeepSeek, GLM, or any endpoint speaking
-  the Anthropic, OpenAI chat-completions, or OpenAI Responses API. `preset =
-  "deepseek"` configures one in a line.
-- **Your ChatGPT subscription as a backend.** `preset = "codex"` reaches
-  GPT-5.6 through the Codex OAuth flow, spending the subscription's allowance
-  rather than a metered API key.
-- **Anthropic untouched.** Original bytes and headers, unbuffered streaming,
-  no retries and no added timeout, so Claude Code's own backoff and
-  rate-limit handling still work.
-- **Short model names.** Select a model as `/model sol`, `codex/sol`, or its
-  full `gpt-5.6-sol` — shorthands come from the preset and follow the newest
-  version of that line.
-- **Agents beyond the picker.** Claude Code shows one custom model; you pick
-  which. The rest stay reachable by name, or as generated subagents that name
-  a routed model in their frontmatter.
-- **Per-user credentials.** Run `claude-router` for a TUI to manage them; they
-  are never shared between users and never written to the config file.
-- **Effort translation.** Claude Code's reasoning effort is moved to each
-  provider's own field, and its levels collapsed where a provider has fewer.
-  With no level configured, the provider's canonical default applies.
+## Presets
+
+`preset = "<name>"` configures a provider in one line.
+
+| Preset | Provider | Models | Credential |
+| --- | --- | --- | --- |
+| `deepseek` | DeepSeek | `pro`, `flash` | API key |
+| `codex` | OpenAI | `sol`, `terra`, `luna` | ChatGPT login |
+
+Shorthands follow the newest model of a line; `pro-v4` and `sol-5.6` pin a
+version.
+
+## Provider APIs
+
+Any provider can also be configured by hand, in one of three dialects.
+
+| `api` | Endpoint | Used by |
+| --- | --- | --- |
+| `anthropic` | `/v1/messages` | DeepSeek, Anthropic-compatible gateways |
+| `openai` | `/chat/completions` | GLM, most OpenAI-compatible APIs |
+| `responses` | `/responses` | OpenAI GPT-5.6 |
 
 ## Installation
 
-- **NixOS** — [install-nixos.md](install-nixos.md)
-- **Other Linux** — [install-systemd-linux.md](install-systemd-linux.md)
-
-Both cover the single-user and machine-wide setups, and the Claude Code
-wrapper that points the CLI at the router.
+| System | Guide |
+| --- | --- |
+| NixOS | [install-nixos.md](install-nixos.md) |
+| Other Linux | [install-systemd-linux.md](install-systemd-linux.md) |
 
 ## Configuration
 
 `--config <path>`, `$CLAUDE_ROUTER_CONFIG`, or
-`~/.config/claude-router/config.toml`. Without a file, the router is pure
-passthrough.
+`~/.config/claude-router/config.toml`. Credentials never go here;
+`claude-router` opens a TUI to manage them per user.
 
 ```toml
-listen = "127.0.0.1:8787"                   # optional
-picker_model = "deepseek/pro"                # which model fills /model
-restrict_to_owner = true                    # only this user may connect
-idle_timeout_secs = 300                     # exit when unused; 0 to stay
+listen = "127.0.0.1:8787"      # optional
+picker_model = "deepseek/pro"  # fills Claude Code's one custom /model entry
+restrict_to_owner = true       # only this user may connect
+idle_timeout_secs = 300        # exit when unused; 0 to stay resident
 
 [providers.deepseek]
 preset = "deepseek"
 
 [providers.glm]
 base_url = "https://api.z.ai/api/paas/v4"
-models = ["glm-4.7"]
+api = "openai"
+models = [{ id = "glm-4.7", name = "GLM 4.7", aliases = ["glm"] }]
 ```
 
-Model IDs and shorthands must be unique across providers, so that a bare name
-selects exactly one model; a mistake is reported at startup. Credentials go in
-the TUI or `claude-router login <provider>`, never here.
+Select a model as `sol`, `codex/sol`, or `gpt-5.6-sol`. Names must be unique
+across providers, checked at startup. Models beyond the picker slot are
+reachable by name or through generated subagents. Reasoning effort is
+translated to each provider's own field and levels.
 
 ## Development
 
