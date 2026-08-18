@@ -20,7 +20,6 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/__router/providers", get(providers))
         .route("/__router/picker", get(picker))
-        .route("/__router/context-window", get(context_window))
         .route("/__router/credentials/{provider}", put(set_credential).delete(clear_credential))
         .route("/__router/oauth/{provider}", put(set_tokens))
 }
@@ -91,32 +90,6 @@ async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
         }
     }
     rows.into_iter().map(|(_, row)| row).collect()
-}
-
-/// Tokens to declare through `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, or empty when
-/// there is nothing useful to say.
-///
-/// Claude Code assumes 200k for a model it does not recognise and compacts
-/// against that. Two things can correct it, and they cover different models:
-/// the `[1m]` marker on a model name, which is per model but only says "1M",
-/// and this variable, which takes any number but applies to the whole
-/// session. So models at or above 1M carry the marker, and this reports the
-/// smallest window among the rest — the only value that is safe for all of
-/// them, since over-declaring means the provider rejects the turn.
-async fn context_window(State(state): State<AppState>, Caller(uid): Caller) -> String {
-    let config = state.config_for(uid);
-    let smallest = config
-        .providers
-        .iter()
-        .flat_map(|provider| &provider.models)
-        .filter(|model| !model.has_large_context())
-        .filter_map(|model| model.context_window)
-        .min();
-    config
-        .force_max_context_window
-        .or(smallest)
-        .map(|tokens| tokens.to_string())
-        .unwrap_or_default()
 }
 
 async fn providers(

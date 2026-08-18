@@ -6,17 +6,23 @@
 # before pointing another client at it.
 base_url = "https://chatgpt.com/backend-api/codex"
 api = "responses"
+# This backend rejects max_output_tokens outright ("Unsupported parameter"),
+# and codex itself never sends one, so Anthropic's max_tokens is dropped
+# rather than translated.
+request_remove = ["max_output_tokens"]
 # Shorthands select the newest model of that line, so `/model sol` keeps
 # working across a version bump while `sol-5.6` stays exact.
-# context_window is the ceiling openai/codex uses for this backend
-# (models.json `max_context_window`); its `context_window` of 272000 is the
-# threshold above which long-context pricing applies, not a limit. The
-# metered API advertises more for the same models — 1,050,000 total and
-# 922,000 input for Sol — but the subscription backend is what these reach.
+# 1,050,000 context and 128,000 output are what OpenAI documents for Sol, and
+# Terra and Luna share the family's limits. The numbers openai/codex ships
+# (272000, max 872000) are that client's own budgets — the first is the
+# threshold where long-context pricing starts — not the model's ceiling.
+#
+# At 1M or more these are named with Claude Code's [1m] marker, which assumes
+# exactly 1,000,000 and so stays inside the real window.
 models = [
-  { id = "gpt-5.6-sol", name = "GPT-5.6 Sol", aliases = ["sol", "sol-5.6"], context_window = 872000, max_output_tokens = 128000 },
-  { id = "gpt-5.6-terra", name = "GPT-5.6 Terra", aliases = ["terra", "terra-5.6"], context_window = 872000, max_output_tokens = 128000 },
-  { id = "gpt-5.6-luna", name = "GPT-5.6 Luna", aliases = ["luna", "luna-5.6"], context_window = 872000, max_output_tokens = 128000 },
+  { id = "gpt-5.6-sol", name = "GPT-5.6 Sol", aliases = ["sol", "sol-5.6"], context_window = 1050000, max_output_tokens = 128000 },
+  { id = "gpt-5.6-terra", name = "GPT-5.6 Terra", aliases = ["terra", "terra-5.6"], context_window = 1050000, max_output_tokens = 128000 },
+  { id = "gpt-5.6-luna", name = "GPT-5.6 Luna", aliases = ["luna", "luna-5.6"], context_window = 1050000, max_output_tokens = 128000 },
 ]
 
 [oauth]
@@ -37,6 +43,9 @@ originator = "codex_cli_rs"
 [headers]
 originator = "codex_cli_rs"
 
+# This backend only answers streamed requests ("Stream must be set to true"),
+# so it always streams upstream; a non-streaming caller gets the finished
+# message assembled from that stream.
 [request_extra]
 store = false
 stream = true

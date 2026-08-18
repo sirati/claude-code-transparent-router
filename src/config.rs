@@ -33,10 +33,6 @@ struct FileConfig {
     /// activation. Absent or zero keeps the daemon resident.
     #[serde(default)]
     idle_timeout_secs: Option<u64>,
-    /// Pins the window reported for `CLAUDE_CODE_MAX_CONTEXT_TOKENS`, instead
-    /// of deriving it from the configured models.
-    #[serde(default)]
-    force_max_context_window: Option<u64>,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -60,6 +56,10 @@ struct FileProvider {
     /// knobs the translators don't model.
     #[serde(default)]
     request_extra: BTreeMap<String, toml::Value>,
+    /// Top-level fields to drop from the outgoing body, for providers that
+    /// reject something the translation would otherwise send.
+    #[serde(default)]
+    request_remove: Vec<String>,
 }
 
 /// A provider whose credential is an OAuth token rather than an API key.
@@ -178,8 +178,6 @@ pub struct Config {
     pub user_config: bool,
     /// Idle seconds before the daemon exits; None or zero means stay.
     pub idle_timeout_secs: Option<u64>,
-    /// Pinned session context window, overriding what the models imply.
-    pub force_max_context_window: Option<u64>,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -196,6 +194,7 @@ pub struct ProviderConfig {
     pub oauth: Option<OauthConfig>,
     pub headers: BTreeMap<String, String>,
     pub request_extra: BTreeMap<String, toml::Value>,
+    pub request_remove: Vec<String>,
 }
 
 pub struct Model {
@@ -272,6 +271,7 @@ impl Config {
                 oauth: p.oauth,
                 headers: p.headers,
                 request_extra: p.request_extra,
+                request_remove: p.request_remove,
                 models: p
                     .models
                     .into_iter()
@@ -320,7 +320,6 @@ impl Config {
             },
             user_config: file.user_config,
             idle_timeout_secs: file.idle_timeout_secs,
-            force_max_context_window: file.force_max_context_window,
             picker_model: file.picker_model,
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),

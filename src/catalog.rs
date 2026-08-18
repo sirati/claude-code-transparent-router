@@ -61,8 +61,7 @@ pub async fn models(
                 });
                 // Advertised for anything that reads the catalog. Claude Code
                 // is not one of them: its discovery reads only `id` and
-                // `display_name`, so the window reaches it through
-                // CLAUDE_CODE_MAX_CONTEXT_TOKENS, which the wrapper sets.
+                // `display_name`.
                 if let Some(window) = model.context_window {
                     entry["context_window"] = json!(window);
                 }

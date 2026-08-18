@@ -37,7 +37,6 @@ let
     }
     # TOML has no null, so an unset choice is an absent key.
     // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; }
-    // lib.optionalAttrs (cfg.forceMaxContextWindow != null) { force_max_context_window = cfg.forceMaxContextWindow; }
     // cfg.extraSettings
   );
 
@@ -48,9 +47,7 @@ let
   };
 
   # Claude Code assumes 200k for a model it does not know. `[1m]` is the one
-  # per-model way to say otherwise, so models that large are named with it;
-  # the smaller ones are covered by CLAUDE_CODE_MAX_CONTEXT_TOKENS, which the
-  # wrapper sets from the daemon.
+  # per-model way to say otherwise, so models that large are named with it.
   largeContext = 1000000;
 
   # Agents name a provider and a model; the router accepts that spelling
@@ -230,16 +227,6 @@ in
         through `--model`, `/model <name>`, and agents. Accepts an ID, a
         shorthand, or either qualified by provider. Defaults to the first
         configured model.
-      '';
-    };
-
-    forceMaxContextWindow = lib.mkOption {
-      type = lib.types.nullOr lib.types.int;
-      default = null;
-      description = ''
-        Pins the window exported as `CLAUDE_CODE_MAX_CONTEXT_TOKENS`. By
-        default it is the smallest among the models that do not carry the
-        `[1m]` marker, which is the only value safe for all of them.
       '';
     };
 

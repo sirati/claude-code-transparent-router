@@ -167,22 +167,6 @@ fi
 exec claude "$@"
 ```
 
-## Context windows
-
-Claude Code assumes 200k tokens for a model it does not recognise and
-compacts against that. Declare `context_window` per model and the router
-handles the rest:
-
-- models at 1M or more are named with Claude Code's `[1m]` marker, which is
-  the only per-model way to state a window;
-- the smallest window among the remaining models is served at
-  `/__router/context-window`, and the wrapper exports it as
-  `CLAUDE_CODE_MAX_CONTEXT_TOKENS` — that setting is per session, not per
-  model, so the smallest is the only value safe for all of them.
-
-Set `force_max_context_window` in the config to pin that number. Anthropic models
-ignore the variable, so the main session is unaffected either way.
-
 ## Agents
 
 Each agent names a model and effort — `~/.claude/agents/flash.md`:

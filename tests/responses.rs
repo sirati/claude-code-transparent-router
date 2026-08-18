@@ -135,6 +135,36 @@ fn request_translation_maps_tools_and_history() {
     assert_eq!(input[3]["call_id"], "toolu_1");
 }
 
+/// The ChatGPT backend refuses `stream: false`, then sends a terminal event
+/// whose `output` is empty — so a non-streaming caller can only be served by
+/// rebuilding the message from the deltas.
+#[test]
+fn non_streaming_reply_is_assembled_from_the_event_stream() {
+    let body = [
+        r#"data: {"type":"response.created","response":{"id":"resp_9"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"Hel"}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"lo"}"#,
+        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"get_weather"}}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"city\":"}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"\"Berlin\"}"}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed","output":[],"usage":{"input_tokens":11,"output_tokens":5}}}"#,
+    ]
+    .join("\n");
+
+    let message = response::from_event_stream(&body, "codex/sol").unwrap();
+    assert_eq!(message["id"], "resp_9");
+    assert_eq!(message["model"], "codex/sol");
+    assert_eq!(message["content"][0]["text"], "Hello");
+    assert_eq!(message["content"][1]["name"], "get_weather");
+    assert_eq!(message["content"][1]["input"], json!({"city": "Berlin"}));
+    assert_eq!(message["stop_reason"], "tool_use");
+    assert_eq!(message["usage"]["input_tokens"], 11);
+
+    // Nothing resembling an event stream: say so rather than invent a reply.
+    assert!(response::from_event_stream("not a stream", "codex/sol").is_none());
+}
+
 #[test]
 fn response_translation_maps_items_and_usage() {
     let responses = json!({

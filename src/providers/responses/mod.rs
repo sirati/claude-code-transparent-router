@@ -39,11 +39,20 @@ pub async fn messages(
             outgoing[key.as_str()] = value;
         }
     }
+    if let Some(object) = outgoing.as_object_mut() {
+        for key in &provider.request_remove {
+            object.remove(key);
+        }
+    }
     if let Some(level) =
         crate::effort::apply(provider.effort.as_ref(), &anthropic_req, &mut outgoing)
     {
         tracing::debug!(provider = provider.name, effort = level, "effort mapped");
     }
+
+    // A provider may insist on streaming whatever the client asked for, in
+    // which case the reply is assembled below rather than passed through.
+    let upstream_streams = outgoing["stream"].as_bool().unwrap_or(streaming);
 
     // Fresh header map from the auth material only: nothing inbound, so the
     // Anthropic credential cannot reach this provider.
@@ -51,7 +60,7 @@ pub async fn messages(
         .post(format!("{}/responses", provider.base_url))
         .headers(auth.into_headers())
         .header("content-type", "application/json")
-        .header("accept", if streaming { "text/event-stream" } else { "application/json" })
+        .header("accept", if upstream_streams { "text/event-stream" } else { "application/json" })
         .body(outgoing.to_string())
         .send()
         .await;
@@ -84,10 +93,15 @@ pub async fn messages(
                 ))
             }
         };
-        match serde_json::from_slice::<Value>(&bytes) {
-            Ok(parsed) => json_response(StatusCode::OK, response::to_anthropic(&parsed, &alias)),
-            Err(err) => crate::passthrough::proxy_error(&format!(
-                "provider '{}' returned invalid JSON: {err}",
+        let body = String::from_utf8_lossy(&bytes);
+        let message = match serde_json::from_str::<Value>(&body) {
+            Ok(parsed) => Some(response::to_anthropic(&parsed, &alias)),
+            Err(_) => response::from_event_stream(&body, &alias),
+        };
+        match message {
+            Some(message) => json_response(StatusCode::OK, message),
+            None => crate::passthrough::proxy_error(&format!(
+                "provider '{}' returned neither JSON nor a readable event stream",
                 provider.name
             )),
         }
