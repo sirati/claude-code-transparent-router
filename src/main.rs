@@ -237,6 +237,18 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
         .connect_timeout(Duration::from_secs(10))
         .build()
         .expect("http client");
+
+    // A provider that reuses the Claude Code CLI's login imports it here, so
+    // no browser is needed unless the CLI has no usable session.
+    if oauth_config.import_claude_code {
+        if let Some(session) =
+            claude_code_transparent_router::oauth::import_claude_code(&client, oauth_config).await
+        {
+            return store_session(&client, config, &tokens, provider_name, &session).await;
+        }
+        println!("No Claude Code login found to reuse; starting a browser login instead.");
+    }
+
     let started = match claude_code_transparent_router::oauth::login::start(oauth_config).await {
         Ok(started) => started,
         Err(err) => {
@@ -269,16 +281,27 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
         }
     };
 
-    // Hand the session to the running daemon: under a system service it runs
-    // as a different user with its own state directory, and would never see a
-    // file written here. Falling back to the local store covers the case
-    // where the daemon is not up yet.
+    // Hand the session to the running daemon, shared with the import path.
+    store_session(&client, config, &tokens, provider_name, &session).await
+}
+
+/// Hand a finished login to the running daemon: under a system service it runs
+/// as a different user with its own state directory, and would never see a
+/// file written here. Falling back to the local store covers the case where
+/// the daemon is not up yet.
+async fn store_session(
+    client: &reqwest::Client,
+    config: &config::Config,
+    tokens: &claude_code_transparent_router::oauth::TokenStore,
+    provider_name: &str,
+    session: &claude_code_transparent_router::oauth::Tokens,
+) -> i32 {
     let daemon_base = format!("http://{}", config.listen);
     match claude_code_transparent_router::oauth::hand_to_daemon(
-        &client,
+        client,
         &daemon_base,
         provider_name,
-        &session,
+        session,
     )
     .await
     {
@@ -286,7 +309,7 @@ async fn run_auth_command(config: &config::Config, command: &str, provider_name:
             println!("Signed in to '{provider_name}' ({}).", session.preview());
             0
         }
-        Err(daemon_err) => match tokens.save(provider_name, &session) {
+        Err(daemon_err) => match tokens.save(provider_name, session) {
             Ok(()) => {
                 println!(
                     "Signed in to '{provider_name}' ({}), stored locally.\n\

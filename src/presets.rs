@@ -9,6 +9,7 @@ use toml::Value;
 pub const FIELD: &str = "preset";
 
 const PRESETS: &[(&str, &str)] = &[
+    ("anthropic", include_str!("../presets/anthropic.toml")),
     ("codex", include_str!("../presets/codex.toml")),
     ("deepseek", include_str!("../presets/deepseek.toml")),
 ];
@@ -74,6 +75,18 @@ mod tests {
                 toml::from_str(text).unwrap_or_else(|err| panic!("preset {name}: {err}"));
             assert!(value.get("base_url").is_some(), "preset {name} has no base_url");
         }
+    }
+
+    #[test]
+    fn anthropic_preset_imports_the_claude_code_login() {
+        let resolved = resolve(table(r#"preset = "anthropic""#)).unwrap();
+        assert_eq!(resolved["base_url"].as_str(), Some("https://api.anthropic.com"));
+        assert_eq!(resolved["api"].as_str(), Some("anthropic"));
+        assert_eq!(resolved["oauth"]["import_claude_code"].as_bool(), Some(true));
+        assert_eq!(
+            resolved["oauth"]["token_url"].as_str(),
+            Some("https://api.anthropic.com/v1/oauth/token")
+        );
     }
 
     #[test]

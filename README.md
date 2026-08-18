@@ -39,9 +39,12 @@ On NixOS these are generated from your configuration.
 | --- | --- | --- | --- |
 | `deepseek` | DeepSeek | `pro`, `flash` | API key |
 | `codex` | OpenAI | `sol`, `terra`, `luna` | ChatGPT login |
+| `anthropic` | Anthropic | `opus`, `sonnet`, `fable`, `haiku` | claude.ai login |
 
 Shorthands follow the newest model of a line; `pro-v4` and `sol-5.6` pin a
-version.
+version. The `anthropic` preset reuses the claude.ai login the CLI already
+holds — `claude-router login anthropic` imports it instead of opening a
+browser.
 
 ## Provider APIs
 

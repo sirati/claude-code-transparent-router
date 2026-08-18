@@ -1,0 +1,42 @@
+# Anthropic through the Claude Code OAuth login. Rather than a new browser
+# flow or an API key, `claude-router login anthropic` reuses the claude.ai
+# session the CLI already holds (`~/.claude/.credentials.json`) and refreshes
+# it the same way the CLI does. Only when the CLI has no session does login
+# fall back to a browser.
+#
+# Routing one of these models goes through the router's own credential, so it
+# is a deliberate opt-in: without this provider the same claude models already
+# pass through to Anthropic with the CLI's own login. Configure it when you
+# want the router itself to hold the subscription session.
+base_url = "https://api.anthropic.com"
+api = "anthropic"
+
+# The current Claude family, with shorthands. Context windows are left unset
+# so nothing is asserted wrong — add a context_window per model here if you
+# want the router to advertise it.
+models = [
+  { id = "claude-opus-5", aliases = ["opus"] },
+  { id = "claude-sonnet-5", aliases = ["sonnet"] },
+  { id = "claude-fable-5", aliases = ["fable"] },
+  { id = "claude-haiku-4-5-20251001", aliases = ["haiku"] },
+]
+
+# Authorize lives on claude.ai, tokens on api.anthropic.com — hence both the
+# issuer and the explicit token_url. The client_id is the CLI's own public
+# one, so the refresh token it already holds is valid here.
+[oauth]
+issuer = "https://claude.ai"
+client_id = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+scope = "org:create_api_key user:profile user:inference"
+callback_port = 54545
+callback_path = "/callback"
+refresh_format = "json"
+token_url = "https://api.anthropic.com/v1/oauth/token"
+import_claude_code = true
+
+[oauth.authorize_extra]
+code = "true"
+
+# The bearer token from the subscription flow needs the oauth beta.
+[headers]
+anthropic-beta = "claude-code-20250219,oauth-2025-04-20"

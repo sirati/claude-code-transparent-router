@@ -29,6 +29,13 @@ impl ProviderAuth {
         Self::bearer_token(key.expose())
     }
 
+    /// API-key auth for the Anthropic dialect: both `x-api-key` and the
+    /// bearer form, because Anthropic-compatible endpoints differ in which
+    /// one they read.
+    pub fn api_key(key: &SecretKey) -> Self {
+        Self::bearer(key).with("x-api-key", key.expose())
+    }
+
     pub fn bearer_token(token: &str) -> Self {
         Self { headers: vec![("authorization".into(), format!("Bearer {token}"))] }
     }
@@ -101,7 +108,14 @@ pub async fn dispatch(
             openai_compat::messages(&state.client, provider, key, body, real_model).await
         }
         ApiFormat::Anthropic => {
-            anthropic_compat::messages(&state.client, provider, key, body, real_model).await
+            anthropic_compat::messages(
+                &state.client,
+                provider,
+                ProviderAuth::api_key(&key),
+                body,
+                real_model,
+            )
+            .await
         }
         ApiFormat::Responses => {
             forward(state, provider, ProviderAuth::bearer(&key), body, real_model, compaction)
@@ -126,7 +140,10 @@ async fn forward(
         ApiFormat::Responses => {
             responses::messages(&state.client, provider, auth, body, real_model, compaction).await
         }
-        // OAuth against the other dialects is not wired up; no configured
+        ApiFormat::Anthropic => {
+            anthropic_compat::messages(&state.client, provider, auth, body, real_model).await
+        }
+        // OAuth against the openai dialect is not wired up; no configured
         // provider needs it yet, and guessing the header shape would be worse
         // than saying so.
         other => proxy_error(&format!(

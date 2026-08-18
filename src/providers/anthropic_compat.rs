@@ -4,18 +4,19 @@
 //! streams back verbatim, so nothing is lost in translation.
 
 use axum::body::{Body, Bytes};
+use axum::http::HeaderValue;
 use axum::response::Response;
 use serde_json::{json, Value};
 
+use super::ProviderAuth;
 use crate::config::ProviderConfig;
-use crate::credentials::SecretKey;
 use crate::headers;
 use crate::passthrough::proxy_error;
 
 pub async fn messages(
     client: &reqwest::Client,
     provider: &ProviderConfig,
-    key: SecretKey,
+    auth: ProviderAuth,
     body: Bytes,
     real_model: String,
 ) -> Response {
@@ -30,14 +31,14 @@ pub async fn messages(
     }
 
     // Fresh header map, never the inbound one: the Anthropic credential
-    // cannot reach this provider. Both auth conventions are sent because
-    // Anthropic-compatible endpoints differ in which one they read.
+    // cannot reach this provider. Auth is the caller's (an API key sends both
+    // conventions; OAuth sends only the bearer form plus its beta header).
+    let mut auth_headers = auth.into_headers();
+    auth_headers.insert("content-type", HeaderValue::from_static("application/json"));
+    auth_headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
     let sent = client
         .post(format!("{}/v1/messages", provider.base_url))
-        .header("content-type", "application/json")
-        .header("anthropic-version", "2023-06-01")
-        .header("x-api-key", key.expose())
-        .header("authorization", format!("Bearer {}", key.expose()))
+        .headers(auth_headers)
         .body(request.to_string())
         .send()
         .await;

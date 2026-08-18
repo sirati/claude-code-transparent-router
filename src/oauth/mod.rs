@@ -3,6 +3,7 @@
 //! and parameter comes from the provider's config, so adding another OAuth
 //! provider is a preset file rather than a code change.
 
+pub mod claude_code;
 pub mod login;
 pub mod store;
 
@@ -58,7 +59,10 @@ pub async fn refresh(
     config: &OauthConfig,
     refresh_token: &str,
 ) -> Result<Tokens, String> {
-    let endpoint = format!("{}/oauth/token", config.issuer.trim_end_matches('/'));
+    let endpoint = config
+        .token_url
+        .clone()
+        .unwrap_or_else(|| format!("{}/oauth/token", config.issuer.trim_end_matches('/')));
     let request = client.post(&endpoint);
     let request = match config.refresh_format {
         RefreshFormat::Json => request.json(&serde_json::json!({
@@ -95,6 +99,33 @@ pub async fn refresh(
         id_token: parsed.id_token,
         access_token,
     })
+}
+
+/// Reuse the Claude Code CLI's own login when a provider's OAuth config asks
+/// for it (`import_claude_code`). Returns the session to store when the CLI
+/// has a usable one — imported verbatim when fresh, refreshed when stale —
+/// and `None` when there is nothing to import, so the caller falls back to a
+/// browser login.
+pub async fn import_claude_code(
+    client: &reqwest::Client,
+    config: &OauthConfig,
+) -> Option<Tokens> {
+    let imported = claude_code::read()?;
+    // The CLI's own expiry, with a minute of skew, decides whether to reuse
+    // the token as-is.
+    let fresh = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    if imported.expires_at.is_some_and(|expires| expires >= fresh) {
+        return Some(Tokens {
+            access_token: imported.access_token,
+            refresh_token: imported.refresh_token,
+            id_token: None,
+            account_id: None,
+            expires_at: imported.expires_at,
+        });
+    }
+    // Stale or unknown expiry: refresh through the configured issuer. Only a
+    // successful refresh imports; a dead refresh token falls back to browser.
+    refresh(client, config, &imported.refresh_token).await.ok()
 }
 
 /// Hand a finished login to the running daemon, which owns the store its

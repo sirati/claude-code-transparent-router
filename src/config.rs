@@ -117,6 +117,11 @@ pub struct OauthConfig {
     /// `form` (RFC 6749) or `json`, as the provider's refresh endpoint wants.
     #[serde(default = "default_refresh_format")]
     pub refresh_format: RefreshFormat,
+    /// Full refresh/token endpoint, when it is not `{issuer}/oauth/token`.
+    /// Anthropic is the example: authorize lives at claude.ai, tokens at
+    /// api.anthropic.com.
+    #[serde(default)]
+    pub token_url: Option<String>,
     /// Dotted path of the id_token claim holding the account identifier,
     /// e.g. `https://api.openai.com/auth.chatgpt_account_id`. Claim names
     /// containing dots are matched before the path is split.
@@ -125,6 +130,13 @@ pub struct OauthConfig {
     /// Header the account identifier is sent in.
     #[serde(default)]
     pub account_header: Option<String>,
+    /// Reuse the Claude Code CLI's own claude.ai login instead of starting a
+    /// browser flow: on `login`, import `~/.claude/.credentials.json` and
+    /// refresh it if stale. When the CLI has no session, fall back to the
+    /// browser. Only meaningful for a provider whose OAuth is the same one
+    /// the CLI uses.
+    #[serde(default)]
+    pub import_claude_code: bool,
 }
 
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -472,5 +484,19 @@ pub mod tests {
     #[test]
     fn explicitly_named_missing_config_is_an_error() {
         assert!(Config::load(Some(fixture("does-not-exist.toml"))).is_err());
+    }
+
+    #[test]
+    fn anthropic_preset_loads_as_an_oauth_provider() {
+        let config = Config::load(Some(fixture("anthropic.toml"))).unwrap();
+        let anthropic = &config.providers[0];
+        assert_eq!(anthropic.api, ApiFormat::Anthropic);
+        assert_eq!(anthropic.models.len(), 4);
+        let oauth = anthropic.oauth.as_ref().unwrap();
+        assert!(oauth.import_claude_code);
+        assert_eq!(
+            oauth.token_url.as_deref(),
+            Some("https://api.anthropic.com/v1/oauth/token")
+        );
     }
 }
