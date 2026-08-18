@@ -69,8 +69,26 @@ $ claude             # Claude Code, routed
 ```
 
 Remove `claude-code` from `environment.systemPackages` — with `wrapperName =
-"claude"` the two would compete on `PATH`. The wrapper launches
-`pkgs.claude-code` including your overlays, or `claudeCodePackage` if set.
+"claude"` the two would compete on `PATH`.
+
+## Which Claude Code the wrapper launches
+
+`pkgs.claude-code` by default, so an overlay is picked up with no further
+configuration:
+
+```nix
+nixpkgs.overlays = [ inputs.claude-code-nix.overlays.default ];
+```
+
+Or name a package instead:
+
+```nix
+services.claude-router.claudeCodePackage =
+  inputs.claude-code-nix.packages.${pkgs.system}.default;
+```
+
+The option exists in both modules. The wrapper only sets a few environment
+variables before exec-ing it, so either route behaves the same.
 
 ## Agents
 
