@@ -74,6 +74,22 @@ in
       description = "Add the wrapper and the router CLI to home.packages.";
     };
 
+    wrapperPackage = lib.mkOption {
+      type = lib.types.package;
+      readOnly = true;
+      default = wrapper;
+      defaultText = lib.literalExpression "<wrapper built from claudeCodePackage>";
+      description = "The built wrapper, exposed for inspection or reuse.";
+    };
+
+    settingsFile = lib.mkOption {
+      type = lib.types.path;
+      readOnly = true;
+      default = configFile;
+      defaultText = lib.literalExpression "<generated claude-router.toml>";
+      description = "The generated router config, exposed for inspection.";
+    };
+
     port = lib.mkOption {
       type = lib.types.port;
       default = 8787;
