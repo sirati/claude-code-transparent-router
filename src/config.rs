@@ -20,6 +20,14 @@ struct FileConfig {
     /// unset means any local user may connect, as any loopback port allows.
     #[serde(default)]
     allowed_uids: Vec<u32>,
+    /// Which model fills Claude Code's single custom /model row. Written
+    /// either as the alias or the bare provider model ID.
+    #[serde(default)]
+    picker_model: Option<String>,
+    /// Keep each connecting user's credentials in their own directory, so one
+    /// system-wide daemon can serve several people without sharing keys.
+    #[serde(default)]
+    per_user_credentials: bool,
     /// Left as raw TOML so `preset` can be resolved before deserializing.
     #[serde(default)]
     providers: BTreeMap<String, toml::Value>,
@@ -141,6 +149,10 @@ pub struct Config {
     pub credentials_dir: PathBuf,
     /// Uids permitted to connect; empty means unrestricted.
     pub allowed_uids: Vec<u32>,
+    /// Provider model ID (never the alias) to offer as the custom /model row.
+    pub picker_model: Option<String>,
+    /// Credentials are stored per connecting uid rather than shared.
+    pub per_user_credentials: bool,
     pub providers: Vec<ProviderConfig>,
     /// The file this config was loaded from, for display; None means defaults.
     pub config_path: Option<PathBuf>,
@@ -236,6 +248,10 @@ impl Config {
                 }
                 uids
             },
+            per_user_credentials: file.per_user_credentials,
+            picker_model: file.picker_model.map(|model| {
+                model.strip_prefix(crate::route::ALIAS_PREFIX).unwrap_or(&model).to_string()
+            }),
             providers,
             config_path: std::fs::metadata(&path).is_ok().then_some(path),
         })

@@ -57,6 +57,7 @@ pub async fn dispatch(
     body: Bytes,
     real_model: String,
     counting: bool,
+    uid: Option<u32>,
 ) -> Response {
     let provider = &state.config.providers[provider];
     if counting {
@@ -68,13 +69,13 @@ pub async fn dispatch(
     // an API key. Either way the header map is built here, from credential
     // material only.
     if provider.oauth.is_some() {
-        return match oauth_auth(state, provider).await {
+        return match oauth_auth(state, provider, uid).await {
             Ok(auth) => forward(state, provider, auth, body, real_model).await,
             Err(err) => proxy_error(&err),
         };
     }
 
-    let Some(key) = state.credentials.get(&provider.name) else {
+    let Some(key) = state.credentials(uid).get(&provider.name) else {
         return proxy_error(&format!(
             "provider '{name}' is configured but has no credentials set; \
              run claude-router in a terminal to set one, or supply the systemd \
@@ -126,9 +127,11 @@ async fn forward(
 async fn oauth_auth(
     state: &AppState,
     provider: &crate::config::ProviderConfig,
+    uid: Option<u32>,
 ) -> Result<ProviderAuth, String> {
     let config = provider.oauth.as_ref().expect("oauth provider");
-    let mut tokens = state.tokens.get(&provider.name).ok_or_else(|| {
+    let store = state.tokens(uid);
+    let mut tokens = store.get(&provider.name).ok_or_else(|| {
         format!(
             "provider '{}' is not signed in; run `claude-router login {}`",
             provider.name, provider.name
@@ -150,7 +153,7 @@ async fn oauth_auth(
             account_id: refreshed.account_id.or(tokens.account_id),
             ..refreshed
         };
-        if let Err(err) = state.tokens.save(&provider.name, &tokens) {
+        if let Err(err) = store.save(&provider.name, &tokens) {
             tracing::warn!(provider = provider.name, %err, "could not persist refreshed tokens");
         }
     }

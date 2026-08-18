@@ -27,6 +27,8 @@ let
         // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
       ) cfg.providers;
     }
+    # TOML has no null, so an unset choice is an absent key.
+    // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; }
     // cfg.extraSettings
   );
 
@@ -35,6 +37,40 @@ let
     name = cfg.wrapperName;
     routerUrl = "http://127.0.0.1:${toString cfg.port}";
   };
+
+  # Claude Code's picker holds exactly one custom entry, but a subagent's
+  # frontmatter can name any model — so agents are how the other routed
+  # models stay reachable.
+  agentFile =
+    name: agent:
+    let
+      frontmatter = [
+        "name: ${name}"
+        "description: ${agent.description}"
+        "model: ${agent.model}"
+      ]
+      ++ lib.optional (agent.effort != null) "effort: ${agent.effort}"
+      ++ lib.optional (agent.tools != null) "tools: ${lib.concatStringsSep ", " agent.tools}";
+    in
+    ''
+      ---
+      ${lib.concatStringsSep "\n" frontmatter}
+      ---
+
+      ${agent.prompt}
+    '';
+
+  # One file per agent per configured Claude Code directory, since a machine
+  # may carry several (.claude, .claudeB, ...).
+  agentFiles = lib.listToAttrs (
+    lib.concatMap (
+      dir:
+      lib.mapAttrsToList (name: agent: {
+        name = "${dir}/agents/${name}.md";
+        value = { text = agentFile name agent; };
+      }) cfg.agents
+    ) cfg.agentDirs
+  );
 in
 {
   options.services.claude-router = {
@@ -110,6 +146,82 @@ in
         port is otherwise reachable by every local process, any of which
         could then spend this user's credentials.
       '';
+    };
+
+    pickerModel = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "anthropic/deepseek-v4-pro";
+      description = ''
+        Which routed model fills Claude Code's `/model` picker. Only one
+        custom entry is supported by Claude Code, so this picks it; the rest
+        stay reachable through `--model`, `/model <id>`, and agents. Accepts
+        the alias or the bare provider model ID. Defaults to the first
+        configured model.
+      '';
+    };
+
+    agentDirs = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ".claude" ];
+      example = [ ".claude" ".claudeB" ];
+      description = ''
+        Claude Code configuration directories, relative to $HOME, that
+        `agents` are written into. Several entries suit a machine carrying
+        more than one Claude Code setup.
+      '';
+    };
+
+    agents = lib.mkOption {
+      default = { };
+      example = lib.literalExpression ''
+        {
+          flash = {
+            model = "anthropic/deepseek-v4-flash";
+            description = "Cheap, fast helper for mechanical edits.";
+            effort = "low";
+            prompt = "You make small mechanical changes exactly as asked.";
+          };
+        }
+      '';
+      description = ''
+        Subagents written to each of `agentDirs`. An agent's frontmatter can
+        name any model, so this is how routed models that did not win the
+        single `/model` slot are still selectable.
+      '';
+      type = lib.types.attrsOf (lib.types.submodule {
+        options = {
+          model = lib.mkOption {
+            type = lib.types.str;
+            example = "anthropic/deepseek-v4-flash";
+            description = "Model this agent runs on — a routed alias, or an Anthropic model.";
+          };
+
+          description = lib.mkOption {
+            type = lib.types.str;
+            description = "When to use this agent; Claude Code reads it to decide.";
+          };
+
+          prompt = lib.mkOption {
+            type = lib.types.lines;
+            default = "";
+            description = "The agent's system prompt, i.e. the body of its file.";
+          };
+
+          effort = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum [ "low" "medium" "high" "xhigh" "max" ]);
+            default = null;
+            description = "Reasoning effort while this agent is active; null inherits the session.";
+          };
+
+          tools = lib.mkOption {
+            type = lib.types.nullOr (lib.types.listOf lib.types.str);
+            default = null;
+            example = [ "Read" "Grep" "Glob" ];
+            description = "Tools the agent may use; null inherits all of them.";
+          };
+        };
+      });
     };
 
     extraSettings = lib.mkOption {
@@ -192,6 +304,8 @@ in
 
   config = lib.mkIf cfg.enable {
     home.packages = lib.optionals cfg.installWrapper [ wrapper cfg.package ];
+
+    home.file = agentFiles;
 
     # The daemon reads this path by default, so the TUI shows the same file.
     xdg.configFile."claude-router/config.toml".source = configFile;

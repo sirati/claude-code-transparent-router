@@ -9,6 +9,7 @@ let
     listen = "127.0.0.1:${toString cfg.port}";
     anthropic_upstream = cfg.anthropicUpstream;
     allowed_uids = cfg.allowedUids;
+    per_user_credentials = cfg.perUserCredentials;
     providers = lib.mapAttrs (_: p:
       lib.optionalAttrs (p.preset != null) { preset = p.preset; }
       // lib.optionalAttrs (p.baseUrl != null) { base_url = p.baseUrl; }
@@ -18,7 +19,7 @@ let
       }
       // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
     ) cfg.providers;
-  };
+  } // lib.optionalAttrs (cfg.pickerModel != null) { picker_model = cfg.pickerModel; };
 
   providersWithKey = lib.filterAttrs (_: p: p.apiKeyFile != null) cfg.providers;
 
@@ -91,6 +92,21 @@ in
       description = "Loopback port the router listens on.";
     };
 
+    perUserCredentials = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Keep each connecting user's credentials and logins in their own
+        directory under the service's state directory, keyed by the uid the
+        kernel reports for the connection. This is what lets one machine-wide
+        daemon serve several people without them sharing keys.
+
+        Machine-level keys from `apiKeyFile` still apply to everyone: a
+        systemd credential outranks a user's own stored key for that provider.
+        Set this to false to have every user share one credential store.
+      '';
+    };
+
     allowedUids = lib.mkOption {
       type = lib.types.listOf lib.types.int;
       default = [ ];
@@ -99,6 +115,19 @@ in
         Uids allowed to connect. Empty means any local user may, as with any
         loopback port. The daemon runs as a DynamicUser here, so its own uid
         is not a useful default — list the humans who should reach it.
+      '';
+    };
+
+    pickerModel = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      example = "anthropic/deepseek-v4-pro";
+      description = ''
+        Which routed model fills Claude Code's `/model` picker. Claude Code
+        supports exactly one custom entry, so this picks it; the others stay
+        reachable through `--model`, `/model <id>`, and agents. Accepts the
+        alias or the bare provider model ID. Defaults to the first configured
+        model.
       '';
     };
 

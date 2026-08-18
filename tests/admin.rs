@@ -7,7 +7,6 @@ use std::sync::Arc;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use claude_code_transparent_router::config::Config;
-use claude_code_transparent_router::credentials::CredentialStore;
 use claude_code_transparent_router::{app, AppState};
 use http_body_util::BodyExt;
 use serde_json::Value;
@@ -20,10 +19,6 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
     config.credentials_dir = credentials_dir.to_path_buf();
     app(AppState {
         client: reqwest::Client::new(),
-        credentials: Arc::new(CredentialStore::new(config.credentials_dir.clone())),
-        tokens: Arc::new(claude_code_transparent_router::oauth::TokenStore::new(
-            &config.credentials_dir,
-        )),
         config: Arc::new(config),
         listen: "127.0.0.1:9999".parse().unwrap(),
     })
@@ -91,4 +86,80 @@ async fn credential_lifecycle_via_admin_api() {
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn picker_model_leads_the_row_list() {
+    let dir = std::env::temp_dir().join(format!("picker-test-{}", std::process::id()));
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/providers.toml");
+    let mut config = Config::load(Some(fixture)).unwrap();
+    config.credentials_dir = dir.clone();
+    // Second provider's model, so leading it proves the choice is honoured.
+    config.picker_model = Some("beta-model".into());
+    let app = app(AppState {
+        client: reqwest::Client::new(),
+        config: Arc::new(config),
+        listen: "127.0.0.1:9999".parse().unwrap(),
+    });
+
+    let response = app
+        .oneshot(Request::get("/__router/picker").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+    let first = body.lines().next().unwrap();
+    assert_eq!(first, "anthropic/beta-model\tBeta Model Pro");
+    // Every model still appears; only the order changes.
+    assert_eq!(body.lines().count(), 3);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn per_user_mode_keeps_each_uid_in_its_own_store() {
+    let base = std::env::temp_dir().join(format!("multiuser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/providers.toml");
+    let mut config = Config::load(Some(fixture)).unwrap();
+    config.credentials_dir = base.clone();
+    config.per_user_credentials = true;
+    let state = AppState {
+        client: reqwest::Client::new(),
+        config: Arc::new(config),
+        listen: "127.0.0.1:9999".parse().unwrap(),
+    };
+
+    // Two users set a key for the same provider.
+    state.credentials(Some(1000)).set("alpha", "sk-user-1000").unwrap();
+    state.credentials(Some(1001)).set("alpha", "sk-user-1001").unwrap();
+
+    assert_eq!(state.credentials(Some(1000)).get("alpha").unwrap().expose(), "sk-user-1000");
+    assert_eq!(state.credentials(Some(1001)).get("alpha").unwrap().expose(), "sk-user-1001");
+    // A third user sees nothing, and an unidentified caller gets an empty store.
+    assert!(state.credentials(Some(1002)).get("alpha").is_none());
+    assert!(state.credentials(None).get("alpha").is_none());
+    assert_ne!(state.state_dir(Some(1000)), state.state_dir(Some(1001)));
+
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+#[test]
+fn shared_mode_uses_one_store_for_everyone() {
+    let base = std::env::temp_dir().join(format!("singleuser-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/providers.toml");
+    let mut config = Config::load(Some(fixture)).unwrap();
+    config.credentials_dir = base.clone();
+    let state = AppState {
+        client: reqwest::Client::new(),
+        config: Arc::new(config),
+        listen: "127.0.0.1:9999".parse().unwrap(),
+    };
+
+    state.credentials(Some(1000)).set("alpha", "sk-shared").unwrap();
+    assert_eq!(state.credentials(None).get("alpha").unwrap().expose(), "sk-shared");
+    assert_eq!(state.credentials(Some(1001)).get("alpha").unwrap().expose(), "sk-shared");
+
+    let _ = std::fs::remove_dir_all(&base);
 }

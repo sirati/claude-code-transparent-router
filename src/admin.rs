@@ -13,6 +13,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::credentials::Source;
+use crate::peer::Caller;
 use crate::AppState;
 
 pub fn routes() -> Router<AppState> {
@@ -29,6 +30,7 @@ pub fn routes() -> Router<AppState> {
 /// than writing to a store the daemon never reads.
 async fn set_tokens(
     State(state): State<AppState>,
+    Caller(uid): Caller,
     Path(provider): Path<String>,
     Json(tokens): Json<crate::oauth::Tokens>,
 ) -> Response {
@@ -36,7 +38,7 @@ async fn set_tokens(
         return (StatusCode::NOT_FOUND, format!("no OAuth provider named '{provider}'"))
             .into_response();
     }
-    match state.tokens.save(&provider, &tokens) {
+    match state.tokens(uid).save(&provider, &tokens) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to store login: {err}"))
             .into_response(),
@@ -48,20 +50,38 @@ async fn set_tokens(
 /// ANTHROPIC_CUSTOM_MODEL_OPTION. Claude Code's gateway model discovery only
 /// runs with API-key auth, so OAuth sessions need this route instead.
 async fn picker(State(state): State<AppState>) -> String {
-    let mut out = String::new();
+    let mut rows: Vec<(bool, String)> = Vec::new();
     for provider in &state.config.providers {
         for model in &provider.models {
             let display = model
                 .display_name
                 .clone()
                 .unwrap_or_else(|| format!("{} (via {})", model.id, provider.name));
-            out.push_str(&format!("{}{}\t{display}\n", crate::route::ALIAS_PREFIX, model.id));
+            let chosen = state.config.picker_model.as_deref() == Some(model.id.as_str());
+            rows.push((
+                chosen,
+                format!("{}{}\t{display}\n", crate::route::ALIAS_PREFIX, model.id),
+            ));
         }
     }
-    out
+    // Claude Code takes only one custom row, so the configured model leads;
+    // without a choice the first configured model does.
+    if let Some(wanted) = &state.config.picker_model {
+        if rows.iter().any(|(chosen, _)| *chosen) {
+            rows.sort_by_key(|(chosen, _)| !chosen);
+        } else {
+            tracing::warn!(model = wanted, "picker_model is not a configured model; ignoring");
+        }
+    }
+    rows.into_iter().map(|(_, row)| row).collect()
 }
 
-async fn providers(State(state): State<AppState>) -> Json<Value> {
+async fn providers(
+    State(state): State<AppState>,
+    Caller(uid): Caller,
+) -> Json<Value> {
+    let credentials = state.credentials(uid);
+    let tokens = state.tokens(uid);
     let providers: Vec<Value> = state
         .config
         .providers
@@ -70,7 +90,7 @@ async fn providers(State(state): State<AppState>) -> Json<Value> {
             // OAuth providers are described by their stored session; API-key
             // providers by the credential store.
             let credential = match provider.oauth.is_some() {
-                true => match state.tokens.get(&provider.name) {
+                true => match tokens.get(&provider.name) {
                     Some(tokens) => json!({
                         "set": true,
                         "source": "login",
@@ -85,11 +105,11 @@ async fn providers(State(state): State<AppState>) -> Json<Value> {
                     }),
                 },
                 false => {
-                    let source = state.credentials.source(&provider.name);
+                    let source = credentials.source(&provider.name);
                     json!({
                         "set": !matches!(source, Source::Unset),
                         "source": source.label(),
-                        "preview": state.credentials.preview(&provider.name),
+                        "preview": credentials.preview(&provider.name),
                         "can_clear": matches!(source, Source::File),
                     })
                 }
@@ -117,6 +137,7 @@ struct SetKey {
 
 async fn set_credential(
     State(state): State<AppState>,
+    Caller(uid): Caller,
     Path(provider): Path<String>,
     Json(body): Json<SetKey>,
 ) -> Response {
@@ -134,7 +155,7 @@ async fn set_credential(
     if key.is_empty() {
         return (StatusCode::BAD_REQUEST, "empty key").into_response();
     }
-    match state.credentials.set(&provider, key) {
+    match state.credentials(uid).set(&provider, key) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(err) => {
             (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to store credential: {err}"))
@@ -145,21 +166,23 @@ async fn set_credential(
 
 async fn clear_credential(
     State(state): State<AppState>,
+    Caller(uid): Caller,
     Path(provider): Path<String>,
 ) -> Response {
+    let credentials = state.credentials(uid);
     if !known(&state, &provider) {
         return (StatusCode::NOT_FOUND, format!("unknown provider '{provider}'")).into_response();
     }
     if is_oauth(&state, &provider) {
-        return match state.tokens.clear(&provider) {
+        return match state.tokens(uid).clear(&provider) {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to sign out: {err}"))
                 .into_response(),
         };
     }
-    match state.credentials.source(&provider) {
+    match credentials.source(&provider) {
         // Idempotent: clearing an unset credential succeeds.
-        Source::File | Source::Unset => match state.credentials.clear(&provider) {
+        Source::File | Source::Unset => match credentials.clear(&provider) {
             Ok(()) => StatusCode::NO_CONTENT.into_response(),
             Err(err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to clear credential: {err}"))

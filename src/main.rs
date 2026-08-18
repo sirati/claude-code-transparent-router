@@ -3,7 +3,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use claude_code_transparent_router::credentials::CredentialStore;
 use claude_code_transparent_router::{app, config, tui, AppState};
 use listenfd::ListenFd;
 use tokio::net::TcpListener;
@@ -121,23 +120,27 @@ async fn serve(config: Arc<config::Config>) {
             }
         },
     };
-    let listen = listener.local_addr().expect("local addr");
+    let bound = listener.local_addr().expect("local addr");
     let allowed = config.allowed_uids.clone();
     if allowed.is_empty() {
-        tracing::info!(addr = %listen, "claude-router daemon listening (any local user)");
+        tracing::info!(addr = %bound, "claude-router daemon listening (any local user)");
     } else {
-        tracing::info!(addr = %listen, uids = ?allowed, "claude-router daemon listening");
+        tracing::info!(addr = %bound, uids = ?allowed, "claude-router daemon listening");
     }
     let listener = claude_code_transparent_router::peer::UidFiltered::new(listener, allowed);
+    let listen = claude_code_transparent_router::peer::PeerInfo { addr: bound, uid: None };
 
-    let credentials = Arc::new(CredentialStore::new(config.credentials_dir.clone()));
-    let tokens = Arc::new(claude_code_transparent_router::oauth::TokenStore::new(&config.credentials_dir));
-    let state = AppState { client, config, credentials, tokens, listen };
+    let state = AppState { client, config, listen: listen.addr };
 
-    axum::serve(listener, app(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .expect("serve");
+    // ConnectInfo carries the verified peer uid, which is how per-user
+    // credential separation stays the kernel's answer rather than a claim.
+    axum::serve(
+        listener,
+        app(state).into_make_service_with_connect_info::<claude_code_transparent_router::peer::PeerInfo>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .expect("serve");
 }
 
 /// `login` / `logout`: run against the token store directly, so they work

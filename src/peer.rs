@@ -11,6 +11,55 @@ use std::net::SocketAddr;
 
 use tokio::net::{TcpListener, TcpStream};
 
+/// Who is on the other end of a connection. Handlers read this through
+/// `ConnectInfo`, which is what lets one daemon keep each user's credentials
+/// apart.
+#[derive(Clone, Copy, Debug)]
+pub struct PeerInfo {
+    pub addr: SocketAddr,
+    /// None when the socket vanished before it could be looked up.
+    pub uid: Option<u32>,
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, UidFiltered>>
+    for PeerInfo
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, UidFiltered>) -> Self {
+        *stream.remote_addr()
+    }
+}
+
+impl std::fmt::Display for PeerInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.uid {
+            Some(uid) => write!(f, "{} (uid {uid})", self.addr),
+            None => write!(f, "{}", self.addr),
+        }
+    }
+}
+
+/// The connecting user's uid, or None when there is no real connection
+/// behind the request (tests call the router directly). Never rejects, so
+/// handlers can always take it.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Caller(pub Option<u32>);
+
+impl<S: Send + Sync> axum::extract::FromRequestParts<S> for Caller {
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        _state: &S,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<axum::extract::ConnectInfo<PeerInfo>>()
+                .and_then(|info| info.0.uid),
+        ))
+    }
+}
+
 /// Wraps a listener, dropping connections from uids that are not allowed.
 pub struct UidFiltered {
     inner: TcpListener,
@@ -23,22 +72,22 @@ impl UidFiltered {
         Self { inner, allowed }
     }
 
-    fn permitted(&self, local: SocketAddr, peer: SocketAddr) -> bool {
+    fn permitted(&self, peer: PeerInfo) -> bool {
         if self.allowed.is_empty() {
             return true;
         }
-        match peer_uid(local, peer) {
+        match peer.uid {
             Some(uid) => {
                 let ok = self.allowed.contains(&uid);
                 if !ok {
-                    tracing::warn!(%peer, uid, "rejected connection from another user");
+                    tracing::warn!(addr = %peer.addr, uid, "rejected connection from another user");
                 }
                 ok
             }
             // Fail closed: an unidentifiable peer is refused rather than
             // silently granted the credentials this daemon holds.
             None => {
-                tracing::warn!(%peer, "rejected connection with unidentifiable owner");
+                tracing::warn!(addr = %peer.addr, "rejected connection with unidentifiable owner");
                 false
             }
         }
@@ -47,25 +96,27 @@ impl UidFiltered {
 
 impl axum::serve::Listener for UidFiltered {
     type Io = TcpStream;
-    type Addr = SocketAddr;
+    type Addr = PeerInfo;
 
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         loop {
-            let Ok((stream, peer)) = self.inner.accept().await else {
+            let Ok((stream, addr)) = self.inner.accept().await else {
                 // Transient accept errors (EMFILE and friends): retry rather
                 // than tear down the listener.
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
             };
-            let local = stream.local_addr().unwrap_or(peer);
-            if self.permitted(local, peer) {
+            let local = stream.local_addr().unwrap_or(addr);
+            // Resolved once here, while the socket is certain to be open.
+            let peer = PeerInfo { addr, uid: peer_uid(local, addr) };
+            if self.permitted(peer) {
                 return (stream, peer);
             }
         }
     }
 
     fn local_addr(&self) -> io::Result<Self::Addr> {
-        self.inner.local_addr()
+        self.inner.local_addr().map(|addr| PeerInfo { addr, uid: own_uid() })
     }
 }
 
