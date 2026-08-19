@@ -171,15 +171,31 @@ fn join_text(blocks: &[Value], sep: &str) -> String {
 /// Responses puts the function's fields at the top level of the tool, unlike
 /// chat-completions which nests them under `function`.
 fn convert_tool(tool: &Value) -> Value {
+    let parameters = agent_model_optional(tool);
     let mut out = json!({
         "type": "function",
         "name": tool["name"],
-        "parameters": tool["input_schema"],
+        "parameters": parameters,
     });
     if let Some(desc) = tool["description"].as_str() {
         out["description"] = json!(desc);
     }
     out
+}
+
+/// The host's Agent tool needs a model enum for Anthropic selectors, but a
+/// routed custom agent already names its model in frontmatter. Codex must be
+/// able to omit that override, or it can only choose one of the host enum's
+/// Anthropic values. Leave every other tool schema untouched.
+fn agent_model_optional(tool: &Value) -> Value {
+    let mut schema = tool["input_schema"].clone();
+    if tool["name"] != json!("Agent") {
+        return schema;
+    }
+    if let Some(required) = schema["required"].as_array_mut() {
+        required.retain(|field| field != "model");
+    }
+    schema
 }
 
 fn convert_tool_choice(choice: &Value) -> Value {

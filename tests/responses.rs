@@ -136,6 +136,39 @@ fn request_translation_maps_tools_and_history() {
     assert_eq!(input[3]["call_id"], "toolu_1");
 }
 
+#[test]
+fn agent_tool_may_omit_the_host_model_override() {
+    let agent_schema = json!({
+        "type": "object",
+        "properties": {
+            "description": {"type": "string"},
+            "model": {"type": "string", "enum": ["sonnet", "opus", "haiku"]},
+            "prompt": {"type": "string"}
+        },
+        "required": ["description", "model", "prompt"],
+        "additionalProperties": false
+    });
+    let weather_schema = json!({
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"]
+    });
+    let anthropic = json!({
+        "tools": [
+            {"name": "Agent", "input_schema": agent_schema},
+            {"name": "get_weather", "input_schema": weather_schema}
+        ]
+    });
+
+    let out = request::to_responses(&anthropic, "gpt-5.6-sol", true);
+    let agent = &out["tools"][0]["parameters"];
+    let required = agent["required"].as_array().unwrap();
+    assert_eq!(required, &[json!("description"), json!("prompt")]);
+    assert_eq!(agent["properties"]["model"]["enum"], json!(["sonnet", "opus", "haiku"]));
+    assert_eq!(agent["additionalProperties"], false);
+    assert_eq!(out["tools"][1]["parameters"], weather_schema);
+}
+
 /// The ChatGPT backend refuses `stream: false`, then sends a terminal event
 /// whose `output` is empty — so a non-streaming caller can only be served by
 /// rebuilding the message from the deltas.
