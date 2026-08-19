@@ -30,14 +30,12 @@ writeShellScriptBin name ''
   # picker under "From gateway", but it only runs when ANTHROPIC_AUTH_TOKEN or
   # ANTHROPIC_API_KEY is set. A claude.ai OAuth login sets neither, so the CLI
   # reads ~/.claude/cache/gateway-models.json instead -- which the wrapper
-  # writes below. The custom option further down is the extra single entry.
+  # writes below.
   export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY="''${CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY:-1}"
 
   # Pre-write the gateway model cache so /model lists every configured model
   # under a claude.ai login, where live discovery never runs. Best-effort: a
-  # cold or absent daemon just skips it and the picker falls back to the single
-  # custom entry. Only replace the file on success, so a good cache is never
-  # clobbered while the daemon is down.
+  # cold or absent daemon leaves the last good cache in place.
   cache_dir="''${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
   if mkdir -p "$cache_dir" 2>/dev/null; then
     tmp="$cache_dir/gateway-models.json.tmp"
@@ -45,17 +43,6 @@ writeShellScriptBin name ''
       mv "$tmp" "$cache_dir/gateway-models.json"
     else
       rm -f "$tmp"
-    fi
-  fi
-
-  if [ -z "''${ANTHROPIC_CUSTOM_MODEL_OPTION:-}" ]; then
-    entry=$(${curl}/bin/curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/picker" | head -n1) || entry=""
-    if [ -n "$entry" ]; then
-      export ANTHROPIC_CUSTOM_MODEL_OPTION=$(printf '%s' "$entry" | cut -f1)
-      model_name=$(printf '%s' "$entry" | cut -f2)
-      if [ -n "$model_name" ] && [ -z "''${ANTHROPIC_CUSTOM_MODEL_OPTION_NAME:-}" ]; then
-        export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$model_name"
-      fi
     fi
   fi
   exec ${lib.getExe claude-code} "$@"

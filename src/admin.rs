@@ -52,11 +52,10 @@ fn strip_qualifier(model: &str) -> &str {
     model.rsplit('/').next().unwrap_or(model)
 }
 
-/// Plain-text picker rows (`<alias>\t<display name>` per line) for shell
-/// consumers like the claude-routed wrapper, which turns the first line into
-/// ANTHROPIC_CUSTOM_MODEL_OPTION. That env var is the single extra entry on
-/// top of gateway discovery (which shows every model), used to pin
-/// `picker_model` and for builds older than discovery.
+/// Plain-text picker rows (`<alias>\t<display name>` per line) for legacy
+/// shell consumers. Gateway discovery is the normal picker path and lists
+/// every model; this endpoint remains for compatible external consumers that
+/// want one preferred row.
 async fn picker(State(state): State<AppState>, Caller(uid): Caller) -> String {
     let config = state.config_for(uid);
     let mut rows: Vec<(bool, String)> = Vec::new();

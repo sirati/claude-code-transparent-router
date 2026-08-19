@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod agent_schema;
 pub mod catalog;
 pub mod compact;
 pub mod config;
@@ -129,6 +130,18 @@ async fn dispatch(state: AppState, req: Request, counting: bool, uid: Option<u32
     // forwarded anywhere: the override arms a bypass and answers in-band, and
     // knowing a request is a compaction changes how a provider is asked.
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
+    let mut bytes = bytes;
+    // The host's Agent model enum only names Anthropic models. Extend it once
+    // before backend selection, so every provider dialect — including a
+    // passthrough Anthropic request — lets a selector choose a routed agent.
+    if !counting {
+        if let Some(request) = parsed.as_ref() {
+            let mut shaped = request.clone();
+            if agent_schema::extend_model_enum(&config, &mut shaped) {
+                bytes = serde_json::to_vec(&shaped).expect("request JSON was already parsed").into();
+            }
+        }
+    }
     if let Some(parsed) = &parsed {
         if compact::is_override(parsed) {
             state.compact_override.arm();

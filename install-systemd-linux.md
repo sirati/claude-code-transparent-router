@@ -97,7 +97,9 @@ CapabilityBoundingSet=
 
 ```toml
 restrict_to_owner = true       # user service only
-picker_model = "deepseek/pro"  # fills Claude Code's one custom /model entry
+# Optional preference for legacy /__router/picker consumers; Claude Code uses
+# gateway discovery and lists every configured model.
+picker_model = "deepseek/pro"
 
 [providers.deepseek]
 preset = "deepseek"
@@ -154,15 +156,17 @@ itself.
 ```bash
 #!/usr/bin/env bash
 export ANTHROPIC_BASE_URL="${CLAUDE_ROUTER_URL:-http://127.0.0.1:8787}"
-# Adds every routed model to the picker, but only under API-key auth.
+# Adds every routed model to the picker. Under a claude.ai login live discovery
+# never runs, so write the same gateway cache Claude Code reads instead.
 export CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1
-# Under a claude.ai login discovery never runs, so expose the chosen model as
-# the one custom entry Claude Code supports.
-entry=$(curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/picker" | head -n1) || entry=""
-if [ -n "$entry" ]; then
-  export ANTHROPIC_CUSTOM_MODEL_OPTION=$(printf '%s' "$entry" | cut -f1)
-  name=$(printf '%s' "$entry" | cut -f2)
-  [ -n "$name" ] && export ANTHROPIC_CUSTOM_MODEL_OPTION_NAME="$name"
+cache_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/cache"
+if mkdir -p "$cache_dir" 2>/dev/null; then
+  tmp="$cache_dir/gateway-models.json.tmp"
+  if curl -sf --max-time 2 "$ANTHROPIC_BASE_URL/__router/gateway-models" > "$tmp" 2>/dev/null; then
+    mv "$tmp" "$cache_dir/gateway-models.json"
+  else
+    rm -f "$tmp"
+  fi
 fi
 exec claude "$@"
 ```

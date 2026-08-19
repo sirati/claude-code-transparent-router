@@ -137,7 +137,7 @@ fn request_translation_maps_tools_and_history() {
 }
 
 #[test]
-fn agent_tool_may_omit_the_host_model_override() {
+fn agent_tool_schema_is_preserved_for_the_common_shaper() {
     let agent_schema = json!({
         "type": "object",
         "properties": {
@@ -163,7 +163,7 @@ fn agent_tool_may_omit_the_host_model_override() {
     let out = request::to_responses(&anthropic, "gpt-5.6-sol", true);
     let agent = &out["tools"][0]["parameters"];
     let required = agent["required"].as_array().unwrap();
-    assert_eq!(required, &[json!("description"), json!("prompt")]);
+    assert_eq!(required, &[json!("description"), json!("model"), json!("prompt")]);
     assert_eq!(agent["properties"]["model"]["enum"], json!(["sonnet", "opus", "haiku"]));
     assert_eq!(agent["additionalProperties"], false);
     assert_eq!(out["tools"][1]["parameters"], weather_schema);

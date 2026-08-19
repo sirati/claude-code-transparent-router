@@ -67,7 +67,9 @@ On NixOS through the module options; elsewhere
 you. Credentials are set with `claude-router`, never in the configuration.
 
 ```toml
-picker_model = "deepseek/pro"  # the extra custom /model entry, on top of discovery
+# Optional preference for legacy /__router/picker consumers. Claude Code's
+# wrapper uses gateway discovery instead and lists every configured model.
+picker_model = "deepseek/pro"
 
 [providers.deepseek]
 preset = "deepseek"
