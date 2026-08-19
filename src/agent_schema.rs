@@ -57,6 +57,24 @@ pub fn extend_model_enum(config: &Config, request: &mut Value) -> bool {
     changed
 }
 
+/// Clone an Anthropic tool schema for an OpenAI provider. The host Agent tool
+/// accepts an absent `model` override and then uses the selected custom
+/// agent's frontmatter model, but rejects a routed model string if it is
+/// present. Do not let OpenAI choose that invalid field at all.
+pub fn without_model_for_openai(tool: &Value) -> Value {
+    let mut schema = tool["input_schema"].clone();
+    if tool.get("name").and_then(Value::as_str) != Some("Agent") {
+        return schema;
+    }
+    if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.remove("model");
+    }
+    if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
+        required.retain(|field| field != "model");
+    }
+    schema
+}
+
 fn model_choices(config: &Config) -> Vec<String> {
     let mut choices = vec![String::new()];
     for provider in &config.providers {
@@ -122,6 +140,29 @@ mod tests {
         assert_eq!(request["tools"][1], weather);
 
         assert!(!extend_model_enum(&config, &mut request));
+    }
+
+    #[test]
+    fn omits_only_agent_model_for_openai() {
+        let agent = json!({
+            "name": "Agent",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "model": {"type": "string", "enum": ["sonnet"]},
+                    "prompt": {"type": "string"}
+                },
+                "required": ["model", "prompt"],
+                "additionalProperties": false
+            }
+        });
+        let schema = without_model_for_openai(&agent);
+        assert!(schema["properties"].get("model").is_none());
+        assert_eq!(schema["required"], json!(["prompt"]));
+        assert_eq!(schema["additionalProperties"], false);
+
+        let other = json!({"name": "get_weather", "input_schema": {"required": ["city"]}});
+        assert_eq!(without_model_for_openai(&other), other["input_schema"]);
     }
 
     #[test]

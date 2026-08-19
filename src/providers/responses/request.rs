@@ -171,10 +171,11 @@ fn join_text(blocks: &[Value], sep: &str) -> String {
 /// Responses puts the function's fields at the top level of the tool, unlike
 /// chat-completions which nests them under `function`.
 fn convert_tool(tool: &Value) -> Value {
+    let parameters = crate::agent_schema::without_model_for_openai(tool);
     let mut out = json!({
         "type": "function",
         "name": tool["name"],
-        "parameters": tool["input_schema"],
+        "parameters": parameters,
     });
     if let Some(desc) = tool["description"].as_str() {
         out["description"] = json!(desc);

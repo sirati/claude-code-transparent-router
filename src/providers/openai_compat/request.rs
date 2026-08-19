@@ -146,7 +146,8 @@ fn join_text(blocks: &[Value], sep: &str) -> String {
 }
 
 fn convert_tool(tool: &Value) -> Value {
-    let mut function = json!({"name": tool["name"], "parameters": tool["input_schema"]});
+    let parameters = crate::agent_schema::without_model_for_openai(tool);
+    let mut function = json!({"name": tool["name"], "parameters": parameters});
     if let Some(desc) = tool["description"].as_str() {
         function["description"] = json!(desc);
     }
