@@ -245,9 +245,9 @@ async fn clear_credential(
 }
 
 fn known(state: &AppState, provider: &str) -> bool {
-    state.config.providers.iter().any(|p| p.name == provider)
+    state.config.load().providers.iter().any(|p| p.name == provider)
 }
 
 fn is_oauth(state: &AppState, provider: &str) -> bool {
-    state.config.providers.iter().any(|p| p.name == provider && p.oauth.is_some())
+    state.config.load().providers.iter().any(|p| p.name == provider && p.oauth.is_some())
 }

@@ -30,6 +30,8 @@ rand = "0.8"
 url = "2"
 http-body = "1"
 pin-project-lite = "0.2"
+arc-swap = "1"
+libc = "0.2"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

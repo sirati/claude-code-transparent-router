@@ -471,15 +471,22 @@ in
         Description = "Claude Code transparent router";
         After = [ "network.target" "claude-router.socket" ];
         Requires = [ "claude-router.socket" ];
-        # The config is a store path, so a changed config is a changed unit
-        # and home-manager restarts the daemon on switch.
-        X-Config = "${configFile}";
+        # A config or package generation change is applied through ExecReload:
+        # same binary reloads config, new binary gets a listener handover.
+        X-SwitchMethod = "reload";
+        X-Reload-Triggers = [ configFile cfg.package ];
       };
       Service = {
-        ExecStart = "${lib.getExe cfg.package} --daemon --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
+        ExecStart = "${lib.getExe cfg.package} --supervisor --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
+        ExecReload = "${lib.getExe cfg.package} --reload --target ${lib.getExe cfg.package} --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
+        Environment = "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock";
+        RuntimeDirectory = "claude-router";
+        RuntimeDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 2;
+        ExitType = "cgroup";
       };
+    };
     };
   };
 }

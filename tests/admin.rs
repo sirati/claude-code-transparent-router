@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use claude_code_transparent_router::config::Config;
@@ -19,7 +20,7 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
     config.credentials_dir = credentials_dir.to_path_buf();
     app(AppState {
         client: reqwest::Client::new(),
-        config: Arc::new(config),
+        config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
@@ -100,7 +101,7 @@ async fn picker_model_leads_the_row_list() {
     config.picker_model = Some("beta-model".into());
     let app = app(AppState {
         client: reqwest::Client::new(),
-        config: Arc::new(config),
+        config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
@@ -161,7 +162,7 @@ fn per_user_mode_resolves_each_uid_to_its_own_home() {
         user_configs: Some(Arc::new(
             claude_code_transparent_router::user_config::UserConfigs::new(config.clone()),
         )),
-        config,
+        config: Arc::new(ArcSwap::from(config)),
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
     };
@@ -187,7 +188,7 @@ fn single_user_mode_uses_one_store_for_everyone() {
     config.credentials_dir = base.clone();
     let state = AppState {
         client: reqwest::Client::new(),
-        config: Arc::new(config),
+        config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),

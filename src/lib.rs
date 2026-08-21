@@ -19,6 +19,8 @@ pub mod user_config;
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
+
 use axum::body::to_bytes;
 use axum::extract::{Request, State};
 use axum::response::Response;
@@ -33,8 +35,10 @@ const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 pub struct AppState {
     pub client: reqwest::Client,
     /// The daemon's own config: listen address, access control, and the
-    /// providers used when not resolving per user.
-    pub config: Arc<config::Config>,
+    /// providers used when not resolving per user. SIGHUP replaces this only
+    /// after a complete config parse succeeds; in-flight requests retain the
+    /// snapshot they selected.
+    pub config: Arc<ArcSwap<config::Config>>,
     /// Set when the daemon serves several users, each with their own config
     /// and credentials in their home directory.
     pub user_configs: Option<Arc<user_config::UserConfigs>>,
@@ -51,7 +55,7 @@ impl AppState {
     pub fn config_for(&self, uid: Option<u32>) -> Arc<config::Config> {
         match (&self.user_configs, uid) {
             (Some(configs), Some(uid)) => configs.get(uid),
-            _ => self.config.clone(),
+            _ => self.config.load_full(),
         }
     }
 
@@ -63,9 +67,9 @@ impl AppState {
             (Some(_), Some(uid)) => user_config::credentials_dir(uid)
                 // A uid with no resolvable home gets a directory that is
                 // deliberately empty rather than someone else's keys.
-                .unwrap_or_else(|| self.config.credentials_dir.join(format!("unresolved/{uid}"))),
-            (Some(_), None) => self.config.credentials_dir.join("unresolved/unknown"),
-            (None, _) => self.config.credentials_dir.clone(),
+                .unwrap_or_else(|| self.config.load().credentials_dir.join(format!("unresolved/{uid}"))),
+            (Some(_), None) => self.config.load().credentials_dir.join("unresolved/unknown"),
+            (None, _) => self.config.load().credentials_dir.clone(),
         }
     }
 
@@ -79,12 +83,12 @@ impl AppState {
 }
 
 pub fn app(state: AppState) -> Router {
-    app_with_activity(state, None)
+    app_with_activity(state, idle::Activity::new(), idle::Drain::new())
 }
 
-/// `activity` is present when the daemon should exit after an idle period;
-/// it counts requests, including the whole life of a streamed response.
-pub fn app_with_activity(state: AppState, activity: Option<idle::Activity>) -> Router {
+/// `activity` counts requests, including the whole life of a streamed response.
+/// The daemon uses it for both idle exit and handover drain barriers.
+pub fn app_with_activity(state: AppState, activity: idle::Activity, drain: idle::Drain) -> Router {
     let router = Router::new()
         .route("/v1/models", get(catalog::models))
         .route("/v1/messages", post(messages))
@@ -92,12 +96,9 @@ pub fn app_with_activity(state: AppState, activity: Option<idle::Activity>) -> R
         .merge(admin::routes())
         .fallback(fallback)
         .with_state(state);
-    match activity {
-        Some(activity) => router.layer(axum::middleware::from_fn(move |req, next| {
-            idle::track(activity.clone(), req, next)
-        })),
-        None => router,
-    }
+    router.layer(axum::middleware::from_fn(move |req, next| {
+        idle::track(activity.clone(), drain.clone(), req, next)
+    }))
 }
 
 async fn messages(

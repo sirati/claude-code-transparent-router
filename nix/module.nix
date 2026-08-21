@@ -3,14 +3,27 @@ let
   cfg = config.services.claude-router;
   settingsFormat = pkgs.formats.toml { };
 
-  # Deliberately no machine-wide provider config: the daemon resolves each
-  # connecting user's own ~/.config/claude-router/config.toml from their uid,
-  # so nothing personal is configured system-wide. Only daemon-level settings
-  # are passed, and those go on the command line.
-  execStart = lib.concatStringsSep " " (
+  # The stable supervisor owns the socket-activated listener and forks workers.
+  # A Nix switch calls --reload: unchanged binaries reload config in place, while
+  # changed binaries receive a duplicated listener before the old worker drains.
+  supervisorStart = lib.concatStringsSep " " (
     [
       (lib.getExe cfg.package)
-      "--daemon"
+      "--supervisor"
+      "--listen"
+      "127.0.0.1:${toString cfg.port}"
+      "--idle-timeout"
+      (toString cfg.idleTimeout)
+    ]
+    ++ lib.optional cfg.perUserConfig "--user-config"
+  );
+
+  reloadStart = lib.concatStringsSep " " (
+    [
+      (lib.getExe cfg.package)
+      "--reload"
+      "--target"
+      (lib.getExe cfg.package)
       "--listen"
       "127.0.0.1:${toString cfg.port}"
       "--idle-timeout"
@@ -265,7 +278,11 @@ in
       # Started by the socket, not at boot.
       wantedBy = [ ];
       serviceConfig = {
-        ExecStart = execStart;
+        ExecStart = supervisorStart;
+        ExecReload = reloadStart;
+        Environment = "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock";
+        RuntimeDirectory = "claude-router";
+        RuntimeDirectoryMode = "0700";
         DynamicUser = true;
         # Users' own credentials live in their homes and are written by the
         # CLI running as them; the daemon only reads. The state directory is
@@ -289,7 +306,10 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         CapabilityBoundingSet = "";
+        ExitType = "cgroup";
       };
+      reloadIfChanged = true;
+      restartIfChanged = false;
     };
   };
 }
