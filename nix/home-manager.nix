@@ -33,6 +33,8 @@ let
           ) p.models;
         }
         // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
+        // lib.optionalAttrs (p.requestExtra != { }) { request_extra = p.requestExtra; }
+        // lib.optionalAttrs (p.requestRemove != [ ]) { request_remove = p.requestRemove; }
       ) cfg.providers;
     }
     # TOML has no null, so an unset choice is an absent key.
@@ -392,6 +394,26 @@ in
               How to translate Claude Code's reasoning effort
               (`output_config.effort`) for this provider. Null forwards it
               unchanged.
+            '';
+          };
+
+          requestExtra = lib.mkOption {
+            type = settingsFormat.type;
+            default = { };
+            example = { reasoning.enabled = true; };
+            description = ''
+              Provider-specific JSON fields merged into every translated
+              request. Use this for extensions such as OpenRouter's
+              `reasoning.enabled`; credentials never belong here.
+            '';
+          };
+
+          requestRemove = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "max_tokens" ];
+            description = ''
+              Top-level translated request fields to omit for this provider.
             '';
           };
         };
