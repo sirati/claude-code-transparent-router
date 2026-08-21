@@ -12,6 +12,7 @@ base_url = "http://beta.example/v1/"
 api = "anthropic"
 models = [
   { id = "beta-model", name = "Beta Model Pro", aliases = ["beta-pro"], context_window = 1000000 },
+  { id = "beta-egress", upstream_id = "beta-model", name = "Beta Model via Egress" },
 ]
 
 [providers.beta.ssh_proxy]

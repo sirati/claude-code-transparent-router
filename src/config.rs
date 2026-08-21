@@ -198,6 +198,11 @@ enum FileModel {
     Id(String),
     Full {
         id: String,
+        /// Actual model ID sent to the provider. Defaults to the distinct
+        /// router-facing `id`, but permits egress replicas to advertise a
+        /// unique name to Claude Code while sharing one upstream model.
+        #[serde(default)]
+        upstream_id: Option<String>,
         #[serde(default)]
         name: Option<String>,
         /// Shorter names for the same model, e.g. `sol` for `gpt-5.6-sol`.
@@ -253,7 +258,11 @@ pub struct ProviderConfig {
 }
 
 pub struct Model {
+    /// Unique model ID advertised to Claude Code and used for routing.
     pub id: String,
+    /// Upstream ID sent to the provider. This may differ from `id` when one
+    /// upstream model is deliberately exposed through multiple egress routes.
+    pub upstream_id: String,
     pub display_name: Option<String>,
     /// Shorthands that select this model, alongside its ID.
     pub aliases: Vec<String>,
@@ -334,6 +343,7 @@ impl Config {
                     .into_iter()
                     .map(|m| match m {
                         FileModel::Id(id) => Model {
+                            upstream_id: id.clone(),
                             id,
                             display_name: None,
                             aliases: Vec::new(),
@@ -342,11 +352,13 @@ impl Config {
                         },
                         FileModel::Full {
                             id,
+                            upstream_id,
                             name,
                             aliases,
                             context_window,
                             max_output_tokens,
                         } => Model {
+                            upstream_id: upstream_id.unwrap_or_else(|| id.clone()),
                             id,
                             display_name: name,
                             aliases,

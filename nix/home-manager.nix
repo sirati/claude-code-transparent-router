@@ -28,6 +28,7 @@ let
               m
             else
               { inherit (m) id name; }
+              // lib.optionalAttrs (m.upstreamId != null) { upstream_id = m.upstreamId; }
               // lib.optionalAttrs (m.aliases != [ ]) { inherit (m) aliases; }
               // lib.optionalAttrs (m.contextWindow != null) { context_window = m.contextWindow; }
           ) p.models;
@@ -361,7 +362,15 @@ in
                   options = {
                     id = lib.mkOption {
                       type = lib.types.str;
-                      description = "Upstream model ID sent to the provider.";
+                      description = "Unique router-facing model ID shown to Claude Code.";
+                    };
+                    upstreamId = lib.mkOption {
+                      type = lib.types.nullOr lib.types.str;
+                      default = null;
+                      description = ''
+                        Actual upstream model ID sent to the provider. Null uses
+                        `id`; set this for distinct egress replicas of one model.
+                      '';
                     };
                     name = lib.mkOption {
                       type = lib.types.str;

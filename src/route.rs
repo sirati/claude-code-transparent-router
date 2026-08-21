@@ -79,7 +79,7 @@ fn find(config: &Config, provider_name: Option<&str>, model: &str) -> Option<Bac
             .find(|candidate| candidate.matches(model))
             .map(|candidate| Backend::Provider {
                 provider: index,
-                real_model: candidate.id.clone(),
+                real_model: candidate.upstream_id.clone(),
             })
     })
 }
@@ -105,6 +105,7 @@ mod tests {
     #[test]
     fn accepts_provider_qualified_names() {
         assert_eq!(routed("beta/beta-model"), Some((1, "beta-model".into())));
+        assert_eq!(routed("beta/beta-egress"), Some((1, "beta-model".into())));
         assert_eq!(routed("alpha/alpha-model"), Some((0, "alpha-model".into())));
     }
 
@@ -118,6 +119,7 @@ mod tests {
     #[test]
     fn accepts_a_bare_model_id() {
         assert_eq!(routed("alpha-model"), Some((0, "alpha-model".into())));
+        assert_eq!(routed("beta-egress"), Some((1, "beta-model".into())));
     }
 
     #[test]

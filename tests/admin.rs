@@ -121,7 +121,7 @@ async fn picker_model_leads_the_row_list() {
     let first = body.lines().next().unwrap();
     assert_eq!(first, "beta-pro[1m]\tBeta Model Pro");
     // Every model still appears; only the order changes.
-    assert_eq!(body.lines().count(), 3);
+    assert_eq!(body.lines().count(), 4);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -143,7 +143,7 @@ async fn gateway_models_serve_the_cache_shape() {
     assert!(body["baseUrl"].is_string());
     assert!(body["fetchedAt"].is_u64());
     let models = body["models"].as_array().unwrap();
-    assert_eq!(models.len(), 3);
+    assert_eq!(models.len(), 4);
     for model in models {
         let id = model["id"].as_str().unwrap();
         assert!(id.starts_with("claude-routed-"), "{id}");
