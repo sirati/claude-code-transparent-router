@@ -487,6 +487,5 @@ in
         ExitType = "cgroup";
       };
     };
-    };
   };
 }
