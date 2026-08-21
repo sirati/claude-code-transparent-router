@@ -58,6 +58,9 @@ struct FileProvider {
     /// Static headers added to every request to this provider.
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    /// Route this provider through a router-managed SSH SOCKS tunnel.
+    #[serde(default)]
+    ssh_proxy: Option<SshProxyConfig>,
     /// Fields merged into the outgoing request body, for provider-specific
     /// knobs the translators don't model.
     #[serde(default)]
@@ -140,6 +143,16 @@ fn default_callback_path() -> String {
 
 fn default_refresh_format() -> RefreshFormat {
     RefreshFormat::Form
+}
+
+/// SSH dynamic-forward transport for one provider. The router owns `-N -D`;
+/// optional `extra_flags` may add normal connection options such as `-J`.
+#[derive(Deserialize, Clone, PartialEq, Eq, Hash)]
+pub struct SshProxyConfig {
+    pub destination: String,
+    #[serde(default)]
+    pub extra_flags: String,
+    pub agent_socket: PathBuf,
 }
 
 /// How a provider expresses reasoning effort. Claude Code sends Anthropic's
@@ -232,6 +245,7 @@ pub struct ProviderConfig {
     pub effort: Option<EffortConfig>,
     pub oauth: Option<OauthConfig>,
     pub headers: BTreeMap<String, String>,
+    pub ssh_proxy: Option<SshProxyConfig>,
     pub request_extra: BTreeMap<String, toml::Value>,
     pub request_remove: Vec<String>,
     /// Set when this provider has its own compaction protocol.
@@ -311,6 +325,7 @@ impl Config {
                 effort: p.effort,
                 oauth: p.oauth,
                 headers: p.headers,
+                ssh_proxy: p.ssh_proxy,
                 request_extra: p.request_extra,
                 request_remove: p.request_remove,
                 compaction: p.compaction,
@@ -431,6 +446,10 @@ pub mod tests {
         assert_eq!(beta.api, ApiFormat::Anthropic);
         assert_eq!(beta.models[0].id, "beta-model");
         assert_eq!(beta.models[0].display_name.as_deref(), Some("Beta Model Pro"));
+        let ssh = beta.ssh_proxy.as_ref().expect("SSH proxy parsed");
+        assert_eq!(ssh.destination, "relay.example");
+        assert_eq!(ssh.extra_flags, "-J bastion.example -p 2222");
+        assert_eq!(ssh.agent_socket, PathBuf::from("/run/user/1000/ssh-agent"));
         assert_eq!(config.provider_for_model("beta-model"), Some(1));
         assert_eq!(config.provider_for_model("unlisted"), None);
         // A compaction section is optional, and absent unless written.

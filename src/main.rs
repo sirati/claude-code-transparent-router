@@ -428,6 +428,7 @@ async fn serve(config: config::Config, args: Args) {
     });
     let state = AppState {
         client,
+        provider_clients: Arc::new(claude_code_transparent_router::ssh_proxy::ProviderClients::default()),
         config: config.clone(),
         user_configs,
         listen: bound,

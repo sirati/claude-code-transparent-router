@@ -14,6 +14,11 @@ models = [
   { id = "beta-model", name = "Beta Model Pro", aliases = ["beta-pro"], context_window = 1000000 },
 ]
 
+[providers.beta.ssh_proxy]
+destination = "relay.example"
+extra_flags = "-J bastion.example -p 2222"
+agent_socket = "/run/user/1000/ssh-agent"
+
 [providers.beta.effort]
 field = "reasoning.effort"
 default = "high"

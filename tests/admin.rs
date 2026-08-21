@@ -20,6 +20,7 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
     config.credentials_dir = credentials_dir.to_path_buf();
     app(AppState {
         client: reqwest::Client::new(),
+        provider_clients: Arc::new(claude_code_transparent_router::ssh_proxy::ProviderClients::default()),
         config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
@@ -101,6 +102,7 @@ async fn picker_model_leads_the_row_list() {
     config.picker_model = Some("beta-model".into());
     let app = app(AppState {
         client: reqwest::Client::new(),
+        provider_clients: Arc::new(claude_code_transparent_router::ssh_proxy::ProviderClients::default()),
         config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
@@ -159,6 +161,7 @@ fn per_user_mode_resolves_each_uid_to_its_own_home() {
     let config = Arc::new(config);
     let state = AppState {
         client: reqwest::Client::new(),
+        provider_clients: Arc::new(claude_code_transparent_router::ssh_proxy::ProviderClients::default()),
         user_configs: Some(Arc::new(
             claude_code_transparent_router::user_config::UserConfigs::new(config.clone()),
         )),
@@ -188,6 +191,7 @@ fn single_user_mode_uses_one_store_for_everyone() {
     config.credentials_dir = base.clone();
     let state = AppState {
         client: reqwest::Client::new(),
+        provider_clients: Arc::new(claude_code_transparent_router::ssh_proxy::ProviderClients::default()),
         config: Arc::new(ArcSwap::from_pointee(config)),
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),

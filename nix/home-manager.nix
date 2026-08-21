@@ -33,6 +33,13 @@ let
           ) p.models;
         }
         // lib.optionalAttrs (p.effort != null) { effort = p.effort; }
+        // lib.optionalAttrs (p.sshDestination != null) {
+          ssh_proxy = {
+            destination = p.sshDestination;
+            extra_flags = p.sshExtraFlags;
+            agent_socket = p.sshAgentSocket;
+          };
+        }
         // lib.optionalAttrs (p.requestExtra != { }) { request_extra = p.requestExtra; }
         // lib.optionalAttrs (p.requestRemove != [ ]) { request_remove = p.requestRemove; }
       ) cfg.providers;
@@ -397,6 +404,38 @@ in
             '';
           };
 
+          sshDestination = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "relay.example.org";
+            description = ''
+              Optional SSH destination for a SOCKS tunnel used only by this
+              provider's outbound inference requests. Null sends directly.
+            '';
+          };
+
+          sshExtraFlags = lib.mkOption {
+            type = lib.types.str;
+            default = "";
+            example = "-J bastion.example.org -p 2222";
+            description = ''
+              Extra SSH options as one shell-style argument string. Ordinary
+              connection flags such as `-J`, `-p`, `-i`, and `-F` are allowed;
+              the router rejects forwarding/control options it owns itself.
+            '';
+          };
+
+          sshAgentSocket = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "/run/user/1000/ssh-agent";
+            description = ''
+              SSH agent socket passed only to this provider's tunnel process
+              as `SSH_AUTH_SOCK`. It must be configured when `sshDestination`
+              is set and is never written into the Nix store.
+            '';
+          };
+
           requestExtra = lib.mkOption {
             type = settingsFormat.type;
             default = { };
@@ -424,9 +463,16 @@ in
   config = lib.mkIf cfg.enable {
     # A mistyped provider or model would otherwise surface as a failed turn
     # in the middle of a conversation.
-    assertions = lib.concatLists (
-      lib.mapAttrsToList (
-        name: agent:
+    assertions =
+      (lib.mapAttrsToList (
+        name: provider: {
+          assertion = provider.sshDestination == null || provider.sshAgentSocket != null;
+          message = "services.claude-router.providers.${name}.sshAgentSocket must be set when sshDestination is set.";
+        }
+      ) cfg.providers)
+      ++ lib.concatLists (
+        lib.mapAttrsToList (
+          name: agent:
         lib.optionals (agent.provider != null) [
           {
             assertion = cfg.providers ? ${agent.provider};
@@ -449,8 +495,8 @@ in
             '';
           }
         ]
-      ) cfg.agents
-    );
+        ) cfg.agents
+      );
 
     home.packages = lib.optionals cfg.installWrapper [ wrapper cfg.package ];
 

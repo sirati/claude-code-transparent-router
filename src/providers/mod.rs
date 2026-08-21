@@ -72,6 +72,10 @@ pub async fn dispatch(
 ) -> Response {
     let (counting, uid, compaction) = (call.counting, call.uid, call.compaction);
     let provider = &config.providers[provider];
+    let client = match state.provider_clients.client(provider) {
+        Ok(client) => client,
+        Err(err) => return proxy_error(&format!("provider '{}' SSH transport failed: {err}", provider.name)),
+    };
     if counting {
         return count_tokens(&body);
     }
@@ -82,7 +86,7 @@ pub async fn dispatch(
     // material only.
     if provider.oauth.is_some() {
         return match oauth_auth(state, provider, uid).await {
-            Ok(auth) => forward(state, provider, auth, body, real_model, compaction).await,
+            Ok(auth) => forward(&client, provider, auth, body, real_model, compaction).await,
             Err(err) => proxy_error(&err),
         };
     }
@@ -98,20 +102,20 @@ pub async fn dispatch(
     };
     match provider.api {
         ApiFormat::Openai => {
-            openai_compat::messages(&state.client, provider, key, body, real_model).await
+            openai_compat::messages(&client, provider, key, body, real_model).await
         }
         ApiFormat::Anthropic => {
-            anthropic_compat::messages(&state.client, provider, key, body, real_model).await
+            anthropic_compat::messages(&client, provider, key, body, real_model).await
         }
         ApiFormat::Responses => {
-            forward(state, provider, ProviderAuth::bearer(&key), body, real_model, compaction)
+            forward(&client, provider, ProviderAuth::bearer(&key), body, real_model, compaction)
                 .await
         }
     }
 }
 
 async fn forward(
-    state: &AppState,
+    client: &reqwest::Client,
     provider: &crate::config::ProviderConfig,
     auth: ProviderAuth,
     body: Bytes,
@@ -124,7 +128,7 @@ async fn forward(
         .fold(auth, |auth, (name, value)| auth.with(name, value.clone()));
     match provider.api {
         ApiFormat::Responses => {
-            responses::messages(&state.client, provider, auth, body, real_model, compaction).await
+            responses::messages(client, provider, auth, body, real_model, compaction).await
         }
         // OAuth against the other dialects is not wired up; no configured
         // provider needs it yet, and guessing the header shape would be worse

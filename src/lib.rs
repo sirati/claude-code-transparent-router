@@ -14,6 +14,7 @@ pub mod presets;
 pub mod providers;
 pub mod route;
 pub mod sse;
+pub mod ssh_proxy;
 pub mod tui;
 pub mod user_config;
 
@@ -34,6 +35,9 @@ const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 #[derive(Clone)]
 pub struct AppState {
     pub client: reqwest::Client,
+    /// Lazy per-provider clients; SSH-proxied providers own a SOCKS tunnel,
+    /// while ordinary providers continue using the direct shared client.
+    pub provider_clients: Arc<ssh_proxy::ProviderClients>,
     /// The daemon's own config: listen address, access control, and the
     /// providers used when not resolving per user. SIGHUP replaces this only
     /// after a complete config parse succeeds; in-flight requests retain the
