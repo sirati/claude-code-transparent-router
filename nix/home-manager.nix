@@ -539,6 +539,10 @@ in
         RuntimeDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 2;
+        # This is the local Claude Code control plane. The router has bounded
+        # request bodies and must survive host memory pressure long enough for
+        # other, less critical workloads to be reclaimed.
+        OOMScoreAdjust = -1000;
         ExitType = "cgroup";
       };
     };

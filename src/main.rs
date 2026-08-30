@@ -126,6 +126,9 @@ fn main() {
         )
         .init();
     tokio::runtime::Builder::new_multi_thread()
+        // The router is I/O-bound. One runtime worker per host CPU wastes
+        // memory on high-core systems and makes it an attractive OOM victim.
+        .worker_threads(4)
         .enable_all()
         .build()
         .expect("tokio runtime")
@@ -438,7 +441,14 @@ async fn serve(config: config::Config, args: Args) {
         start_worker_control(stream, config.clone(), config_path.clone(), drain.clone(), serve_tx, drain_tx);
     }
     if !*serve_rx.borrow() {
-        serve_rx.clone().changed().await.expect("supervisor activation");
+        // A supervisor can disappear while this worker is waiting to be
+        // activated (for example after an OOM kill). Exiting cleanly lets the
+        // systemd supervisor restart instead of turning a control-channel EOF
+        // into a panic and a restart storm.
+        if serve_rx.clone().changed().await.is_err() {
+            tracing::warn!("supervisor exited before activating router worker");
+            return;
+        }
     }
     tracing::info!(addr = %bound, "claude-router worker serving");
     let idle_timeout = args.idle_timeout.or(config.load().idle_timeout_secs).filter(|secs| *secs > 0).map(Duration::from_secs);

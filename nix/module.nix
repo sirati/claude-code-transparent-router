@@ -306,6 +306,7 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         CapabilityBoundingSet = "";
+        OOMScoreAdjust = -1000;
         ExitType = "cgroup";
       };
       reloadIfChanged = true;
