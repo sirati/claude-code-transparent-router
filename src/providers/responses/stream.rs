@@ -22,7 +22,10 @@ pub fn response(upstream: reqwest::Response, alias_model: String) -> Response {
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header(PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE)
-        .body(Body::from_stream(translate(upstream.bytes_stream(), alias_model)))
+        .body(Body::from_stream(translate(
+            upstream.bytes_stream(),
+            alias_model,
+        )))
         .expect("stream response")
 }
 
@@ -69,13 +72,20 @@ enum Kind {
     Tool,
 }
 
+struct Open {
+    index: usize,
+    kind: Kind,
+    name: Option<String>,
+    arguments: String,
+}
+
 pub struct Translator {
     alias_model: String,
     started: bool,
     done: bool,
     next_index: usize,
-    /// Provider `output_index` -> (our block index, kind).
-    open: BTreeMap<u64, (usize, Kind)>,
+    /// Provider `output_index` -> our open block.
+    open: BTreeMap<u64, Open>,
     stop: &'static str,
     input_tokens: u64,
     output_tokens: u64,
@@ -105,11 +115,15 @@ impl Translator {
             self.finish(out);
             return;
         }
-        let Ok(event) = serde_json::from_str::<Value>(payload) else { return };
+        let Ok(event) = serde_json::from_str::<Value>(payload) else {
+            return;
+        };
         if self.done {
             return;
         }
-        let Some(kind) = event["type"].as_str() else { return };
+        let Some(kind) = event["type"].as_str() else {
+            return;
+        };
         let output_index = event["output_index"].as_u64().unwrap_or(0);
 
         match kind {
@@ -119,7 +133,13 @@ impl Translator {
             }
             "response.output_item.added" => {
                 self.start("msg_routed", out);
-                self.open_item(output_index, &event["item"], out);
+                // Reasoning items are announced before their first summary
+                // delta. Opening them here would serialize an empty Anthropic
+                // thinking block if the provider omits all reasoning text.
+                // `ensure` opens it lazily when a nonempty delta arrives.
+                if event["item"]["type"] != Value::String("reasoning".into()) {
+                    self.open_item(output_index, &event["item"], out);
+                }
             }
             "response.output_text.delta" => {
                 if let Some(text) = event["delta"].as_str() {
@@ -128,9 +148,9 @@ impl Translator {
                 }
             }
             "response.reasoning_summary_text.delta" | "response.reasoning_text.delta" => {
-                if let Some(text) = event["delta"].as_str() {
-                    let index = self.ensure(output_index, Kind::Thinking, out);
-                    out.push_str(&sse::thinking_delta(index, text));
+                if let Some(text) = event["delta"].as_str().filter(|text| !text.is_empty()) {
+                    let index = self.ensure(output_index, Kind::Text, out);
+                    out.push_str(&sse::text_delta(index, text));
                 }
             }
             "response.function_call_arguments.delta" => {
@@ -138,8 +158,12 @@ impl Translator {
                     // The block was opened by output_item.added, which carries
                     // the call id and name; without it there is nothing to
                     // attach arguments to.
-                    if let Some((index, _)) = self.open.get(&output_index) {
-                        out.push_str(&sse::input_json_delta(*index, fragment));
+                    if let Some(open) = self.open.get_mut(&output_index) {
+                        if open.name.as_deref() == Some("Agent") {
+                            open.arguments.push_str(fragment);
+                        } else {
+                            out.push_str(&sse::input_json_delta(open.index, fragment));
+                        }
                     }
                 }
             }
@@ -171,10 +195,15 @@ impl Translator {
         }
         self.done = true;
         self.start("msg_routed", out);
-        for index in std::mem::take(&mut self.open).into_values() {
-            out.push_str(&sse::content_block_stop(index.0));
+        for open in std::mem::take(&mut self.open).into_values() {
+            self.emit_arguments(&open, out);
+            out.push_str(&sse::content_block_stop(open.index));
         }
-        out.push_str(&sse::message_delta(self.stop, self.input_tokens, self.output_tokens));
+        out.push_str(&sse::message_delta(
+            self.stop,
+            self.input_tokens,
+            self.output_tokens,
+        ));
         out.push_str(&sse::message_stop());
     }
 
@@ -192,7 +221,7 @@ impl Translator {
         // A block can never precede message_start, even when the provider
         // sends deltas for an item it never announced.
         self.start("msg_routed", out);
-        let (kind, block) = match item["type"].as_str() {
+        let (kind, block, name) = match item["type"].as_str() {
             Some("function_call") => {
                 self.stop = "tool_use";
                 let fallback = format!("toolu_{}", self.next_index);
@@ -202,38 +231,60 @@ impl Translator {
                     .unwrap_or(&fallback)
                     .to_string();
                 let name = item["name"].as_str().unwrap_or_default().to_string();
-                (Kind::Tool, sse::tool_use_block(&id, &name))
+                (Kind::Tool, sse::tool_use_block(&id, &name), Some(name))
             }
-            Some("reasoning") => (Kind::Thinking, sse::thinking_block()),
-            _ => (Kind::Text, sse::text_block()),
+            Some("reasoning") => (Kind::Thinking, sse::thinking_block(), None),
+            _ => (Kind::Text, sse::text_block(), None),
         };
         let index = self.next_index;
         self.next_index += 1;
         out.push_str(&sse::content_block_start(index, block));
-        self.open.insert(output_index, (index, kind));
+        self.open.insert(
+            output_index,
+            Open {
+                index,
+                kind,
+                name,
+                arguments: String::new(),
+            },
+        );
     }
 
     /// Deltas can arrive for an item the provider never announced; open a
     /// block of the right kind rather than dropping the content.
     fn ensure(&mut self, output_index: u64, kind: Kind, out: &mut String) -> usize {
-        if let Some((index, open_kind)) = self.open.get(&output_index) {
-            if *open_kind == kind {
-                return *index;
+        if let Some(open) = self.open.get(&output_index) {
+            if open.kind == kind {
+                return open.index;
             }
         }
         let item = match kind {
-            Kind::Thinking => serde_json::json!({"type": "reasoning"}),
+            Kind::Tool => serde_json::json!({"type": "function_call"}),
             _ => serde_json::json!({"type": "message"}),
         };
         self.close(output_index, out);
         self.open_item(output_index, &item, out);
-        self.open[&output_index].0
+        self.open[&output_index].index
     }
 
     fn close(&mut self, output_index: u64, out: &mut String) {
-        if let Some((index, _)) = self.open.remove(&output_index) {
-            out.push_str(&sse::content_block_stop(index));
+        if let Some(open) = self.open.remove(&output_index) {
+            self.emit_arguments(&open, out);
+            out.push_str(&sse::content_block_stop(open.index));
         }
+    }
+
+    fn emit_arguments(&self, open: &Open, out: &mut String) {
+        let Some(name) = &open.name else {
+            return;
+        };
+        if name != "Agent" {
+            return;
+        }
+        let mut input = serde_json::from_str(&open.arguments)
+            .unwrap_or_else(|_| serde_json::json!({"raw": open.arguments}));
+        crate::agent_schema::without_no_isolation(name, &mut input);
+        out.push_str(&sse::input_json_delta(open.index, &input.to_string()));
     }
 
     fn read_usage(&mut self, response: &Value) {

@@ -20,9 +20,15 @@ pub fn from_event_stream(body: &str, alias_model: &str) -> Option<Value> {
     let mut saw_event = false;
 
     for line in body.lines() {
-        let Some(payload) = line.trim_end().strip_prefix("data:") else { continue };
-        let Ok(event) = serde_json::from_str::<Value>(payload.trim()) else { continue };
-        let Some(kind) = event["type"].as_str() else { continue };
+        let Some(payload) = line.trim_end().strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(payload.trim()) else {
+            continue;
+        };
+        let Some(kind) = event["type"].as_str() else {
+            continue;
+        };
         saw_event = true;
         let index = event["output_index"].as_u64().unwrap_or(0);
         let delta = event["delta"].as_str().unwrap_or_default();
@@ -62,7 +68,7 @@ pub fn from_event_stream(body: &str, alias_model: &str) -> Option<Value> {
 
     let mut content = Vec::new();
     if !thinking.is_empty() {
-        content.push(json!({"type": "thinking", "thinking": thinking, "signature": ""}));
+        content.push(json!({"type": "text", "text": thinking}));
     }
     if !text.is_empty() {
         content.push(json!({"type": "text", "text": text}));
@@ -74,7 +80,7 @@ pub fn from_event_stream(body: &str, alias_model: &str) -> Option<Value> {
             "type": "tool_use",
             "id": if call_id.is_empty() { fallback } else { call_id },
             "name": name,
-            "input": parse_arguments(&Value::String(arguments)),
+            "input": parse_arguments(&name, &Value::String(arguments)),
         }));
     }
 
@@ -101,12 +107,19 @@ pub fn to_anthropic(responses: &Value, alias_model: &str) -> Value {
     let mut content = Vec::new();
     let mut stop_reason = "end_turn";
 
-    for (i, item) in responses["output"].as_array().into_iter().flatten().enumerate() {
+    for (i, item) in responses["output"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         match item["type"].as_str() {
             Some("reasoning") => {
                 let text = reasoning_text(item);
                 if !text.is_empty() {
-                    content.push(json!({"type": "thinking", "thinking": text, "signature": ""}));
+                    // Responses reasoning has no Anthropic signature. Preserve
+                    // readable summaries as ordinary assistant text instead.
+                    content.push(json!({"type": "text", "text": text}));
                 }
             }
             Some("message") => {
@@ -118,11 +131,12 @@ pub fn to_anthropic(responses: &Value, alias_model: &str) -> Value {
             Some("function_call") => {
                 stop_reason = "tool_use";
                 let fallback = format!("toolu_{i}");
+                let name = item["name"].as_str().unwrap_or_default();
                 content.push(json!({
                     "type": "tool_use",
                     "id": item["call_id"].as_str().filter(|s| !s.is_empty()).unwrap_or(&fallback),
-                    "name": item["name"],
-                    "input": parse_arguments(&item["arguments"]),
+                    "name": name,
+                    "input": parse_arguments(name, &item["arguments"]),
                 }));
             }
             _ => {}
@@ -180,9 +194,11 @@ fn reasoning_text(item: &Value) -> String {
 
 /// Responses ships tool arguments as a JSON-encoded string; Anthropic wants
 /// the object. An unparseable fragment is preserved rather than lost.
-pub fn parse_arguments(arguments: &Value) -> Value {
-    match arguments.as_str() {
+pub fn parse_arguments(name: &str, arguments: &Value) -> Value {
+    let mut parsed = match arguments.as_str() {
         Some("") | None => json!({}),
         Some(s) => serde_json::from_str(s).unwrap_or_else(|_| json!({"raw": s})),
-    }
+    };
+    crate::agent_schema::without_no_isolation(name, &mut parsed);
+    parsed
 }

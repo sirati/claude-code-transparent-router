@@ -9,8 +9,11 @@ fn run_translator(lines: &[&str]) -> (String, Vec<String>) {
         translator.on_line(line, &mut out);
     }
     translator.finish(&mut out);
-    let events =
-        out.lines().filter_map(|l| l.strip_prefix("event: ")).map(str::to_string).collect();
+    let events = out
+        .lines()
+        .filter_map(|l| l.strip_prefix("event: "))
+        .map(str::to_string)
+        .collect();
     (out, events)
 }
 
@@ -53,8 +56,15 @@ fn reasoning_then_tool_call_keeps_indices_sequential() {
         r#"data: {"type":"response.output_item.done","output_index":1}"#,
         r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
     ]);
-    assert_eq!(events.iter().filter(|e| *e == "content_block_start").count(), 2);
-    assert!(out.contains(r#""thinking":"pondering""#));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| *e == "content_block_start")
+            .count(),
+        2
+    );
+    assert!(out.contains(r#""text":"pondering""#));
+    assert!(!out.contains(r#""type":"thinking""#));
     assert!(out.contains(r#""name":"get_weather""#));
     assert!(out.contains(r#""index":1"#));
     assert!(out.contains(r#""stop_reason":"tool_use""#));
@@ -66,6 +76,29 @@ fn reasoning_then_tool_call_keeps_indices_sequential() {
         .filter_map(|v| v["delta"]["partial_json"].as_str().map(str::to_string))
         .collect();
     assert_eq!(fragments, r#"{"city":"Berlin"}"#);
+}
+
+#[test]
+fn reasoning_without_text_does_not_emit_an_empty_thinking_block() {
+    let (out, events) = run_translator(&[
+        r#"data: {"type":"response.created","response":{"id":"resp_empty_reasoning"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning"}}"#,
+        r#"data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":""}"#,
+        r#"data: {"type":"response.output_item.done","output_index":0}"#,
+        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":1,"delta":"answer"}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+    ]);
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| *event == "content_block_start")
+            .count(),
+        1
+    );
+    assert!(!out.contains(r#""type":"thinking""#));
+    assert!(out.contains(r#""text":"answer""#));
 }
 
 #[test]
@@ -89,8 +122,9 @@ fn stream_error_surfaces_in_band() {
 
 #[test]
 fn unannounced_deltas_still_open_a_block() {
-    let (out, events) =
-        run_translator(&[r#"data: {"type":"response.output_text.delta","output_index":3,"delta":"hi"}"#]);
+    let (out, events) = run_translator(&[
+        r#"data: {"type":"response.output_text.delta","output_index":3,"delta":"hi"}"#,
+    ]);
     assert_eq!(events[0], "message_start");
     assert!(events.contains(&"content_block_start".to_string()));
     assert!(out.contains(r#""text":"hi""#));
@@ -143,6 +177,7 @@ fn agent_tool_omits_model_for_openai() {
         "properties": {
             "description": {"type": "string"},
             "model": {"type": "string", "enum": ["sonnet", "opus", "haiku"]},
+            "isolation": {"type": "string", "enum": ["worktree"]},
             "prompt": {"type": "string"}
         },
         "required": ["description", "model", "prompt"],
@@ -165,6 +200,10 @@ fn agent_tool_omits_model_for_openai() {
     let required = agent["required"].as_array().unwrap();
     assert_eq!(required, &[json!("description"), json!("prompt")]);
     assert!(agent["properties"].get("model").is_none());
+    assert_eq!(
+        agent["properties"]["isolation"]["enum"],
+        json!(["worktree", "no"])
+    );
     assert_eq!(agent["additionalProperties"], false);
     assert_eq!(out["tools"][1]["parameters"], weather_schema);
 }
@@ -218,7 +257,10 @@ fn system_messages_become_developer_messages() {
     let roles: Vec<&str> = input.iter().filter_map(|i| i["role"].as_str()).collect();
     assert_eq!(roles, ["user", "assistant", "developer", "user"]);
     assert!(!input.iter().any(|i| i["role"] == "system"), "{input:#?}");
-    assert_eq!(input[2]["content"][0]["text"], "ambient context, not from the user");
+    assert_eq!(
+        input[2]["content"][0]["text"],
+        "ambient context, not from the user"
+    );
 }
 
 /// A user message may carry guidance either side of a tool result, and Claude
@@ -240,7 +282,10 @@ fn text_around_a_tool_result_survives_in_order() {
     assert_eq!(input[0]["content"][0]["text"], "before");
     assert_eq!(input[1]["type"], "function_call_output");
     assert_eq!(input[1]["call_id"], "toolu_1");
-    assert_eq!(input[2]["content"][0]["text"], "actually, stop and do something else");
+    assert_eq!(
+        input[2]["content"][0]["text"],
+        "actually, stop and do something else"
+    );
 }
 
 /// A provider may want a compaction sent its own way. The knobs are config,
@@ -251,7 +296,11 @@ fn compaction_protocol_reshapes_the_body() {
     let fixture =
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/compaction.toml");
     let config = claude_code_transparent_router::config::Config::load(Some(fixture)).unwrap();
-    let provider = config.providers.iter().find(|p| p.compaction.is_some()).unwrap();
+    let provider = config
+        .providers
+        .iter()
+        .find(|p| p.compaction.is_some())
+        .unwrap();
 
     let anthropic = json!({"messages": [{"role": "user", "content": "summarise"}], "stream": true});
     let mut ordinary = request::to_responses(&anthropic, "gamma-model", true);
@@ -264,11 +313,64 @@ fn compaction_protocol_reshapes_the_body() {
     responses::shape_body(provider, provider.compaction.as_ref(), &mut compacting);
     let object = compacting.as_object().unwrap();
     for dropped in ["tool_choice", "store", "stream", "include"] {
-        assert!(!object.contains_key(dropped), "{dropped} survived: {compacting:#?}");
+        assert!(
+            !object.contains_key(dropped),
+            "{dropped} survived: {compacting:#?}"
+        );
     }
     assert_eq!(compacting["parallel_tool_calls"], json!(true));
     let input = compacting["input"].as_array().unwrap();
-    assert_eq!(input.last().unwrap(), &json!({"type": "compaction_trigger"}));
+    assert_eq!(
+        input.last().unwrap(),
+        &json!({"type": "compaction_trigger"})
+    );
+}
+
+#[test]
+fn agent_tool_isolation_no_is_removed_from_responses_stream() {
+    let (out, _) = run_translator(&[
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_agent","name":"Agent"}}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"isolation\":"}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"no\",\"prompt\":\"delegate\"}"}"#,
+        r#"data: {"type":"response.output_item.done","output_index":0}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+    ]);
+    let input: Value = out
+        .lines()
+        .filter(|line| line.contains("input_json_delta"))
+        .filter_map(|line| serde_json::from_str::<Value>(line.strip_prefix("data: ")?).ok())
+        .find_map(|event| serde_json::from_str(event["delta"]["partial_json"].as_str()?).ok())
+        .unwrap();
+    assert_eq!(input, json!({"prompt": "delegate"}));
+}
+
+#[test]
+fn agent_tool_isolation_no_is_removed_from_responses_replies() {
+    let responses = json!({
+        "output": [
+            {"type": "function_call", "call_id": "call_agent", "name": "Agent", "arguments": "{\"isolation\":\"no\",\"prompt\":\"delegate\"}"},
+            {"type": "function_call", "call_id": "call_other", "name": "get_weather", "arguments": "{\"isolation\":\"no\"}"}
+        ]
+    });
+    let message = response::to_anthropic(&responses, "responses/test-model");
+    assert_eq!(
+        message["content"][0]["input"],
+        json!({"prompt": "delegate"})
+    );
+    assert_eq!(message["content"][1]["input"], json!({"isolation": "no"}));
+
+    let body = [
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_agent","name":"Agent"}}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"isolation\":"}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"\"no\",\"prompt\":\"delegate\"}"}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+    ]
+    .join("\n");
+    let message = response::from_event_stream(&body, "responses/test-model").unwrap();
+    assert_eq!(
+        message["content"][0]["input"],
+        json!({"prompt": "delegate"})
+    );
 }
 
 #[test]
@@ -285,7 +387,7 @@ fn response_translation_maps_items_and_usage() {
     });
     let msg = response::to_anthropic(&responses, "anthropic/test-model");
     assert_eq!(msg["model"], "anthropic/test-model");
-    assert_eq!(msg["content"][0]["thinking"], "thought");
+    assert_eq!(msg["content"][0]["text"], "thought");
     assert_eq!(msg["content"][1]["text"], "answer");
     assert_eq!(msg["content"][2]["input"], json!({"a": 1}));
     assert_eq!(msg["stop_reason"], "tool_use");

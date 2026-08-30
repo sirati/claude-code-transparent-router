@@ -83,14 +83,18 @@ fn tool_call_stream_accumulates_json_deltas() {
 }
 
 #[test]
-fn reasoning_content_becomes_thinking_block() {
+fn reasoning_content_becomes_text_block() {
     let (out, events) = run_translator(&[
         r#"data: {"id":"c3","choices":[{"delta":{"reasoning_content":"hmm"}}]}"#,
         r#"data: {"id":"c3","choices":[{"delta":{"content":"answer"}}]}"#,
         "data: [DONE]",
     ]);
-    assert_eq!(events[0..4], ["message_start", "content_block_start", "content_block_delta", "content_block_stop"]);
-    assert!(out.contains(r#""thinking":"hmm""#));
+    assert_eq!(
+        events[0..3],
+        ["message_start", "content_block_start", "content_block_delta"]
+    );
+    assert!(out.contains(r#""text":"hmm""#));
+    assert!(!out.contains(r#""type":"thinking""#));
     assert!(out.contains(r#""text":"answer""#));
 }
 
@@ -125,7 +129,10 @@ fn request_translation_maps_tools_and_history() {
     assert_eq!(openai["stream"], json!(true));
     let messages = openai["messages"].as_array().unwrap();
     assert_eq!(messages[0]["role"], "system");
-    assert_eq!(messages[2]["tool_calls"][0]["function"]["name"], "get_weather");
+    assert_eq!(
+        messages[2]["tool_calls"][0]["function"]["name"],
+        "get_weather"
+    );
     assert_eq!(
         messages[2]["tool_calls"][0]["function"]["arguments"],
         json!(r#"{"city":"Berlin"}"#)
@@ -134,6 +141,42 @@ fn request_translation_maps_tools_and_history() {
     assert_eq!(messages[3]["tool_call_id"], "toolu_1");
     assert_eq!(openai["tools"][0]["function"]["name"], "get_weather");
     assert_eq!(openai["tool_choice"], "auto");
+}
+
+#[test]
+fn agent_tool_isolation_no_is_removed_from_non_streaming_reply() {
+    let openai = json!({
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {"tool_calls": [
+                {"id": "call_agent", "function": {"name": "Agent", "arguments": "{\"isolation\":\"no\",\"prompt\":\"delegate\"}"}},
+                {"id": "call_other", "function": {"name": "get_weather", "arguments": "{\"isolation\":\"no\"}"}}
+            ]}
+        }]
+    });
+
+    let message = response::to_anthropic(&openai, "openai/test-model");
+    assert_eq!(
+        message["content"][0]["input"],
+        json!({"prompt": "delegate"})
+    );
+    assert_eq!(message["content"][1]["input"], json!({"isolation": "no"}));
+}
+
+#[test]
+fn agent_tool_isolation_no_is_removed_from_streaming_reply() {
+    let (out, _) = run_translator(&[
+        r#"data: {"id":"c5","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_agent","function":{"name":"Agent","arguments":"{\"isolation\":"}}]}}]}"#,
+        r#"data: {"id":"c5","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"no\",\"prompt\":\"delegate\"}"}}]}}]}"#,
+        r#"data: [DONE]"#,
+    ]);
+    let input: Value = out
+        .lines()
+        .filter(|line| line.contains("input_json_delta"))
+        .filter_map(|line| serde_json::from_str::<Value>(line.strip_prefix("data: ")?).ok())
+        .find_map(|event| serde_json::from_str(event["delta"]["partial_json"].as_str()?).ok())
+        .unwrap();
+    assert_eq!(input, json!({"prompt": "delegate"}));
 }
 
 #[test]

@@ -61,6 +61,10 @@ pub fn extend_model_enum(config: &Config, request: &mut Value) -> bool {
 /// accepts an absent `model` override and then uses the selected custom
 /// agent's frontmatter model, but rejects a routed model string if it is
 /// present. Do not let OpenAI choose that invalid field at all.
+///
+/// The extra `isolation: "no"` choice is an OpenAI-only escape hatch. When a
+/// provider selects it, [`without_no_isolation`] removes the argument before
+/// Claude Code executes the tool, restoring the host's default isolation.
 pub fn without_model_for_openai(tool: &Value) -> Value {
     let mut schema = tool["input_schema"].clone();
     if tool.get("name").and_then(Value::as_str) != Some("Agent") {
@@ -68,11 +72,38 @@ pub fn without_model_for_openai(tool: &Value) -> Value {
     }
     if let Some(properties) = schema.get_mut("properties").and_then(Value::as_object_mut) {
         properties.remove("model");
+        if let Some(isolation) = properties
+            .get_mut("isolation")
+            .and_then(Value::as_object_mut)
+        {
+            if let Some(values) = isolation.get_mut("enum").and_then(Value::as_array_mut) {
+                if !values.iter().any(|value| value == "no") {
+                    values.push(json!("no"));
+                }
+            }
+        }
     }
     if let Some(required) = schema.get_mut("required").and_then(Value::as_array_mut) {
         required.retain(|field| field != "model");
     }
     schema
+}
+
+/// Remove the OpenAI-only `isolation: "no"` sentinel from a completed Agent
+/// call. An absent value lets Claude Code use its usual default isolation.
+pub fn without_no_isolation(name: &str, arguments: &mut Value) -> bool {
+    if name != "Agent" {
+        return false;
+    }
+    let Some(arguments) = arguments.as_object_mut() else {
+        return false;
+    };
+    if arguments.get("isolation").and_then(Value::as_str) == Some("no") {
+        arguments.remove("isolation");
+        true
+    } else {
+        false
+    }
 }
 
 fn model_choices(config: &Config) -> Vec<String> {
@@ -150,6 +181,7 @@ mod tests {
                 "type": "object",
                 "properties": {
                     "model": {"type": "string", "enum": ["sonnet"]},
+                    "isolation": {"type": "string", "enum": ["worktree", "none"]},
                     "prompt": {"type": "string"}
                 },
                 "required": ["model", "prompt"],
@@ -158,11 +190,30 @@ mod tests {
         });
         let schema = without_model_for_openai(&agent);
         assert!(schema["properties"].get("model").is_none());
+        assert_eq!(
+            schema["properties"]["isolation"]["enum"],
+            json!(["worktree", "none", "no"])
+        );
         assert_eq!(schema["required"], json!(["prompt"]));
         assert_eq!(schema["additionalProperties"], false);
 
         let other = json!({"name": "get_weather", "input_schema": {"required": ["city"]}});
         assert_eq!(without_model_for_openai(&other), other["input_schema"]);
+    }
+
+    #[test]
+    fn removes_only_agent_no_isolation_sentinel() {
+        let mut sentinel = json!({"isolation": "no", "prompt": "delegate"});
+        assert!(without_no_isolation("Agent", &mut sentinel));
+        assert_eq!(sentinel, json!({"prompt": "delegate"}));
+
+        let mut ordinary = json!({"isolation": "worktree"});
+        assert!(!without_no_isolation("Agent", &mut ordinary));
+        assert_eq!(ordinary, json!({"isolation": "worktree"}));
+
+        let mut other = json!({"isolation": "no"});
+        assert!(!without_no_isolation("get_weather", &mut other));
+        assert_eq!(other, json!({"isolation": "no"}));
     }
 
     #[test]

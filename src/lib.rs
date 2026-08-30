@@ -3,6 +3,7 @@ pub mod agent_schema;
 pub mod catalog;
 pub mod compact;
 pub mod config;
+pub mod content;
 pub mod credentials;
 pub mod effort;
 pub mod headers;
@@ -136,6 +137,15 @@ async fn dispatch(state: AppState, req: Request, counting: bool, uid: Option<u32
     // knowing a request is a compaction changes how a provider is asked.
     let parsed: Option<serde_json::Value> = serde_json::from_slice(&bytes).ok();
     let mut bytes = bytes;
+    let mut parsed = parsed;
+    // Strip broken persisted thinking blocks before compaction detection,
+    // request shaping, and backend selection. This protects all ordinary
+    // messages too, including direct Anthropic passthrough.
+    if let Some(request) = parsed.as_mut() {
+        if content::sanitize_thinking(request) {
+            bytes = serde_json::to_vec(request).expect("request JSON was already parsed").into();
+        }
+    }
     // The host's Agent model enum only names Anthropic models. Extend it once
     // before backend selection, so every provider dialect — including a
     // passthrough Anthropic request — lets a selector choose a routed agent.
