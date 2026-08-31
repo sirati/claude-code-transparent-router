@@ -29,9 +29,37 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 
-/// Request bodies are buffered so the model can be peeked; this bounds that
-/// buffer, not any streaming response.
-const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
+pub const OUTBOUND_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Shared outbound transport. Redirects are disabled because a redirect could
+/// replay provider credentials to a URL the router did not select.
+pub fn outbound_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(OUTBOUND_CONNECT_TIMEOUT)
+        .pool_idle_timeout(std::time::Duration::from_secs(90))
+        .pool_max_idle_per_host(4)
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("outbound HTTP client")
+}
+
+/// Buffered conversation requests are memory-heavy, so the in-flight count is
+/// bounded — but a permit lives for the whole streamed response, and one Claude
+/// Code session legitimately runs a main conversation, parallel subagents, and
+/// concurrent count_tokens calls at once. The limit exists to stop unbounded
+/// runaway (sixteen 32 MiB bodies still fit under the unit's MemoryMax), not
+/// to throttle that parallelism.
+const MAX_IN_FLIGHT_REQUESTS: usize = 16;
+
+/// Request bodies can fan out into several JSON representations while they
+/// are translated. Keep the wire body low enough that those bounded copies do
+/// not destabilise the local control plane.
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -94,6 +122,7 @@ pub fn app(state: AppState) -> Router {
 /// `activity` counts requests, including the whole life of a streamed response.
 /// The daemon uses it for both idle exit and handover drain barriers.
 pub fn app_with_activity(state: AppState, activity: idle::Activity, drain: idle::Drain) -> Router {
+    let admission = idle::Admission::new(MAX_IN_FLIGHT_REQUESTS);
     let router = Router::new()
         .route("/v1/models", get(catalog::models))
         .route("/v1/messages", post(messages))
@@ -102,7 +131,7 @@ pub fn app_with_activity(state: AppState, activity: idle::Activity, drain: idle:
         .fallback(fallback)
         .with_state(state);
     router.layer(axum::middleware::from_fn(move |req, next| {
-        idle::track(activity.clone(), drain.clone(), req, next)
+        idle::track(activity.clone(), drain.clone(), admission.clone(), req, next)
     }))
 }
 
@@ -150,10 +179,9 @@ async fn dispatch(state: AppState, req: Request, counting: bool, uid: Option<u32
     // before backend selection, so every provider dialect — including a
     // passthrough Anthropic request — lets a selector choose a routed agent.
     if !counting {
-        if let Some(request) = parsed.as_ref() {
-            let mut shaped = request.clone();
-            if agent_schema::extend_model_enum(&config, &mut shaped) {
-                bytes = serde_json::to_vec(&shaped).expect("request JSON was already parsed").into();
+        if let Some(request) = parsed.as_mut() {
+            if agent_schema::extend_model_enum(&config, request) {
+                bytes = serde_json::to_vec(request).expect("request JSON was already parsed").into();
             }
         }
     }

@@ -280,7 +280,10 @@ in
       serviceConfig = {
         ExecStart = supervisorStart;
         ExecReload = reloadStart;
-        Environment = "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock";
+        Environment = [
+          "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock"
+          "MALLOC_ARENA_MAX=2"
+        ];
         RuntimeDirectory = "claude-router";
         RuntimeDirectoryMode = "0700";
         DynamicUser = true;
@@ -306,7 +309,13 @@ in
         ProtectKernelModules = true;
         ProtectControlGroups = true;
         CapabilityBoundingSet = "";
-        OOMScoreAdjust = -1000;
+        Restart = "on-failure";
+        RestartSec = 2;
+        MemoryHigh = "768M";
+        MemoryMax = "1G";
+        MemorySwapMax = 0;
+        TasksMax = 512;
+        TimeoutStopSec = 30;
         ExitType = "cgroup";
       };
       reloadIfChanged = true;

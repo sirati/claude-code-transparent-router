@@ -180,6 +180,13 @@ fn request_reload(args: &Args) -> i32 {
     0
 }
 
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(120);
+
+struct DrainingWorker {
+    worker: Worker,
+    started: std::time::Instant,
+}
+
 async fn supervise(config: config::Config, args: Args) {
     let listener = take_listener(&config, &args).await;
     let path = control_path();
@@ -196,7 +203,7 @@ async fn supervise(config: config::Config, args: Args) {
     let mut spec = WorkerSpec::from_args(&args);
     let mut worker = spawn_worker(&listener, &spec).expect("start initial router worker");
     send_worker(&mut worker, "serve").expect("activate initial router worker");
-    let mut draining_workers = Vec::new();
+    let mut draining_workers: Vec<DrainingWorker> = Vec::new();
     tracing::info!(worker = worker.id(), "router worker ready");
     loop {
         control.set_nonblocking(true).expect("nonblocking control socket");
@@ -228,11 +235,22 @@ async fn supervise(config: config::Config, args: Args) {
                                 if send_worker(&mut worker, "drain").is_ok()
                                     && send_worker(&mut successor, "serve").is_ok()
                                 {
-                                    draining_workers.push(worker);
+                                    if let Some(mut old) = draining_workers.pop() {
+                                        tracing::warn!(worker = old.worker.id(), "forcing stale draining router worker to exit");
+                                        let _ = old.worker.child.kill();
+                                        let _ = old.worker.child.wait();
+                                    }
+                                    draining_workers.push(DrainingWorker {
+                                        worker,
+                                        started: std::time::Instant::now(),
+                                    });
                                     worker = successor;
                                     spec = next_spec;
                                     let _ = writeln!(request, "ok");
                                 } else {
+                                    tracing::error!("router handover activation failed");
+                                    let _ = successor.child.kill();
+                                    let _ = successor.child.wait();
                                     let _ = writeln!(request, "error handover failed");
                                 }
                             }
@@ -252,14 +270,27 @@ async fn supervise(config: config::Config, args: Args) {
         if let Ok(Some(status)) = worker.child.try_wait() {
             tracing::warn!(?status, "router worker exited; starting replacement");
             match spawn_worker(&listener, &spec) {
-                Ok(next) => worker = next,
+                Ok(mut next) => match send_worker(&mut next, "serve") {
+                    Ok(()) => {
+                        tracing::info!(worker = next.id(), "replacement router worker ready");
+                        worker = next;
+                    }
+                    Err(err) => {
+                        tracing::error!(%err, "could not activate replacement router worker");
+                        let _ = next.child.kill();
+                        let _ = next.child.wait();
+                    }
+                },
                 Err(err) => tracing::error!(%err, "could not restart router worker"),
             }
         }
         for old in &mut draining_workers {
-            let _ = old.child.try_wait();
+            if old.started.elapsed() >= DRAIN_TIMEOUT {
+                tracing::warn!(worker = old.worker.id(), ?DRAIN_TIMEOUT, "draining router worker exceeded deadline; terminating");
+                let _ = old.worker.child.kill();
+            }
         }
-        draining_workers.retain_mut(|old| old.child.try_wait().ok().flatten().is_none());
+        draining_workers.retain_mut(|old| old.worker.child.try_wait().ok().flatten().is_none());
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -419,13 +450,7 @@ async fn serve(config: config::Config, args: Args) {
             .expect("numeric worker control fd");
         unsafe { UnixStream::from_raw_fd(fd) }
     });
-    let client = reqwest::Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .pool_idle_timeout(Duration::from_secs(90))
-        .tcp_keepalive(Duration::from_secs(60))
-        .no_gzip().no_brotli().no_deflate().no_zstd()
-        .redirect(reqwest::redirect::Policy::none())
-        .build().expect("reqwest client");
+    let client = claude_code_transparent_router::outbound_client();
     let user_configs = (args.user_config || config.load().user_config).then(|| {
         Arc::new(claude_code_transparent_router::user_config::UserConfigs::new(config.load_full()))
     });

@@ -534,15 +534,21 @@ in
       Service = {
         ExecStart = "${lib.getExe cfg.package} --supervisor --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
         ExecReload = "${lib.getExe cfg.package} --reload --target ${lib.getExe cfg.package} --config ${configFile} --idle-timeout ${toString cfg.idleTimeout}";
-        Environment = "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock";
+        Environment = [
+          "CLAUDE_ROUTER_CONTROL_SOCKET=%t/claude-router/control.sock"
+          "MALLOC_ARENA_MAX=2"
+        ];
         RuntimeDirectory = "claude-router";
         RuntimeDirectoryMode = "0700";
         Restart = "on-failure";
         RestartSec = 2;
-        # This is the local Claude Code control plane. The router has bounded
-        # request bodies and must survive host memory pressure long enough for
-        # other, less critical workloads to be reclaimed.
-        OOMScoreAdjust = -1000;
+        # Keep a malformed or unexpectedly large request in this cgroup: a
+        # restart is preferable to an OOM victim chosen elsewhere on the host.
+        MemoryHigh = "768M";
+        MemoryMax = "1G";
+        MemorySwapMax = 0;
+        TasksMax = 512;
+        TimeoutStopSec = 30;
         ExitType = "cgroup";
       };
     };

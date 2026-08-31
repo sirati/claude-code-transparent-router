@@ -72,13 +72,15 @@ pub async fn dispatch(
 ) -> Response {
     let (counting, uid, compaction) = (call.counting, call.uid, call.compaction);
     let provider = &config.providers[provider];
-    let client = match state.provider_clients.client(provider) {
-        Ok(client) => client,
-        Err(err) => return proxy_error(&format!("provider '{}' SSH transport failed: {err}", provider.name)),
-    };
+    // The local estimate needs only the request bytes. Avoid building a
+    // provider transport or starting an SSH tunnel for a call it never uses.
     if counting {
         return count_tokens(&body);
     }
+    let client = match state.provider_clients.client(&state.client, provider) {
+        Ok(client) => client,
+        Err(err) => return proxy_error(&format!("provider '{}' SSH transport failed: {err}", provider.name)),
+    };
     tracing::info!(provider = provider.name, model = real_model, api = ?provider.api, "routing");
 
     // OAuth providers authenticate with a stored token; everything else with

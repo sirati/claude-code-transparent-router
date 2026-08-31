@@ -19,9 +19,15 @@ pub struct ProviderClients {
 }
 
 impl ProviderClients {
-    pub fn client(&self, provider: &ProviderConfig) -> Result<reqwest::Client, String> {
+    /// Get a reusable transport. Direct providers share the router's global
+    /// client; SSH providers share one client for each live SOCKS tunnel.
+    pub fn client(
+        &self,
+        direct: &reqwest::Client,
+        provider: &ProviderConfig,
+    ) -> Result<reqwest::Client, String> {
         let Some(ssh) = &provider.ssh_proxy else {
-            return Ok(reqwest::Client::new());
+            return Ok(direct.clone());
         };
         let tunnel = {
             let mut tunnels = self.tunnels.lock().map_err(|_| "SSH tunnel registry is poisoned")?;
@@ -30,20 +36,7 @@ impl ProviderClients {
                 .or_insert_with(|| Arc::new(SshTunnel::new(ssh.clone())))
                 .clone()
         };
-        let addr = tunnel.ensure()?;
-        reqwest::Client::builder()
-            // `h` deliberately proxies DNS through the remote network too.
-            .proxy(reqwest::Proxy::all(format!("socks5h://{addr}")).map_err(|err| err.to_string())?)
-            .connect_timeout(Duration::from_secs(15))
-            .pool_idle_timeout(Duration::from_secs(90))
-            .tcp_keepalive(Duration::from_secs(60))
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
-            .no_zstd()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|err| format!("could not build SSH-proxied client: {err}"))
+        tunnel.client()
     }
 }
 
@@ -55,6 +48,7 @@ struct SshTunnel {
 struct RunningTunnel {
     child: Child,
     addr: SocketAddr,
+    client: reqwest::Client,
 }
 
 impl SshTunnel {
@@ -62,20 +56,20 @@ impl SshTunnel {
         Self { config, state: Mutex::new(None) }
     }
 
-    fn ensure(&self) -> Result<SocketAddr, String> {
+    fn client(&self) -> Result<reqwest::Client, String> {
         let mut state = self.state.lock().map_err(|_| "SSH tunnel state is poisoned")?;
         if let Some(running) = state.as_mut() {
             if running.child.try_wait().map_err(|err| err.to_string())?.is_none() && reachable(running.addr) {
-                return Ok(running.addr);
+                return Ok(running.client.clone());
             }
             let _ = running.child.kill();
             let _ = running.child.wait();
             *state = None;
         }
         let running = self.start()?;
-        let addr = running.addr;
+        let client = running.client.clone();
         *state = Some(running);
-        Ok(addr)
+        Ok(client)
     }
 
     fn start(&self) -> Result<RunningTunnel, String> {
@@ -107,8 +101,22 @@ impl SshTunnel {
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if reachable(addr) {
+                let client = reqwest::Client::builder()
+                    // `h` deliberately proxies DNS through the remote network too.
+                    .proxy(reqwest::Proxy::all(format!("socks5h://{addr}")).map_err(|err| err.to_string())?)
+                    .connect_timeout(Duration::from_secs(15))
+                    .pool_idle_timeout(Duration::from_secs(90))
+                    .pool_max_idle_per_host(4)
+                    .tcp_keepalive(Duration::from_secs(60))
+                    .no_gzip()
+                    .no_brotli()
+                    .no_deflate()
+                    .no_zstd()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|err| format!("could not build SSH-proxied client: {err}"))?;
                 tracing::info!(destination = self.config.destination, %addr, "SSH provider proxy ready");
-                return Ok(RunningTunnel { child, addr });
+                return Ok(RunningTunnel { child, addr, client });
             }
             if let Some(status) = child.try_wait().map_err(|err| err.to_string())? {
                 let detail = child

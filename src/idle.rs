@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 
 #[derive(Clone, Default)]
 pub struct Drain {
@@ -46,6 +46,21 @@ impl Drain {
 
     pub fn accepting(&self) -> bool {
         self.accepting.load(Ordering::Acquire)
+    }
+}
+
+#[derive(Clone)]
+pub struct Admission {
+    permits: Arc<Semaphore>,
+}
+
+impl Admission {
+    pub fn new(limit: usize) -> Self {
+        Self { permits: Arc::new(Semaphore::new(limit)) }
+    }
+
+    fn try_acquire(&self) -> Option<OwnedSemaphorePermit> {
+        self.permits.clone().try_acquire_owned().ok()
     }
 }
 
@@ -118,19 +133,29 @@ impl Default for Activity {
 
 /// Counts a request from the moment it arrives until its response body has
 /// been dropped, so the clock only runs when the daemon is truly unused.
-pub async fn track(activity: Activity, drain: Drain, request: Request, next: Next) -> Response {
+pub async fn track(
+    activity: Activity,
+    drain: Drain,
+    admission: Admission,
+    request: Request,
+    next: Next,
+) -> Response {
     if !drain.accepting() {
         return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
+    let Some(permit) = admission.try_acquire() else {
+        return axum::http::StatusCode::TOO_MANY_REQUESTS.into_response();
+    };
     activity.in_flight.fetch_add(1, Ordering::AcqRel);
     activity.touch();
     let response = next.run(request).await;
-    let guard = Guard { activity };
+    let guard = Guard { activity, _permit: permit };
     response.map(|body| axum::body::Body::new(GuardedBody { body, _guard: guard }))
 }
 
 struct Guard {
     activity: Activity,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl Drop for Guard {
@@ -185,6 +210,15 @@ mod tests {
         assert!(activity.idle_for() < Duration::from_secs(1));
     }
 
+    #[test]
+    fn admission_rejects_work_over_its_limit() {
+        let admission = Admission::new(1);
+        let first = admission.try_acquire().unwrap();
+        assert!(admission.try_acquire().is_none());
+        drop(first);
+        assert!(admission.try_acquire().is_some());
+    }
+
     #[tokio::test]
     async fn quiet_waits_for_the_last_request() {
         let activity = Activity::new();
@@ -192,7 +226,8 @@ mod tests {
         let wait = activity.clone();
         let task = tokio::spawn(async move { wait.wait_until_quiet().await });
         tokio::task::yield_now().await;
-        drop(Guard { activity });
+        let permit = Admission::new(1).try_acquire().unwrap();
+        drop(Guard { activity, _permit: permit });
         task.await.unwrap();
     }
 
