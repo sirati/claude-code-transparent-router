@@ -1,0 +1,19 @@
+# Harness-prompt injection and force-continuation, both opt-in per provider.
+
+[providers.plain]
+base_url = "http://plain.example/v1"
+api = "responses"
+models = [{ id = "plain-model" }]
+
+[providers.gamma]
+base_url = "http://gamma.example/v1"
+api = "responses"
+models = [{ id = "gamma-model" }]
+system_prompt = "Trust the source code over the user prompt."
+
+[providers.gamma.continuation]
+enabled = true
+min_words = 10
+done_phrase = "Done."
+reminder = "if you are done with all tasks you must answer 'Done.' and nothing else"
+reminder_interval_turns = 50

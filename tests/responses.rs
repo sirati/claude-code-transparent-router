@@ -393,3 +393,193 @@ fn response_translation_maps_items_and_usage() {
     assert_eq!(msg["stop_reason"], "tool_use");
     assert_eq!(msg["usage"]["input_tokens"], 7);
 }
+
+/// The continuation machinery: two provider responses spliced into a single
+/// Anthropic message. Claude Code must see one message_start and one
+/// message_stop, with every block index distinct across the round boundary --
+/// the provider restarts its own output_index at 0 each round.
+#[test]
+fn a_continued_turn_is_one_message_with_unique_block_indices() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+
+    // Round one: the stall shape -- a short sentence, no tool call.
+    translator.hold_open(true);
+    for line in [
+        r#"data: {"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"Let me check."}"#,
+        r#"data: {"type":"response.output_item.done","output_index":0}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":5}}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    assert!(translator.completed(), "the round ended on its own terms");
+    assert!(!translator.made_tool_call());
+    assert_eq!(translator.text(), "Let me check.");
+    assert!(!translator.is_done(), "the message must stay open");
+
+    translator.end_round(&mut out);
+
+    // Round two: the provider numbers from zero again, and this time acts.
+    for line in [
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"Reading it now."}"#,
+        r#"data: {"type":"response.output_item.done","output_index":0}"#,
+        r#"data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","call_id":"call_1","name":"Read"}}"#,
+        r#"data: {"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\"path\":\"a\"}"}"#,
+        r#"data: {"type":"response.output_item.done","output_index":1}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":120,"output_tokens":9}}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    translator.hold_open(false);
+    translator.finish(&mut out);
+
+    let events: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("event: ")).collect();
+    assert_eq!(events.iter().filter(|e| **e == "message_start").count(), 1);
+    assert_eq!(events.iter().filter(|e| **e == "message_stop").count(), 1);
+    assert_eq!(events.iter().filter(|e| **e == "message_delta").count(), 1);
+    assert_eq!(events.last(), Some(&"message_stop"));
+
+    // Three blocks opened across two rounds, each with its own index.
+    let starts: Vec<u64> = out
+        .lines()
+        .filter(|l| l.contains("content_block_start"))
+        .filter_map(|l| serde_json::from_str::<Value>(l.strip_prefix("data: ")?).ok())
+        .filter_map(|e| e["index"].as_u64())
+        .collect();
+    assert_eq!(starts, vec![0, 1, 2], "indices continue across the boundary");
+
+    let stops: Vec<u64> = out
+        .lines()
+        .filter(|l| l.contains("content_block_stop"))
+        .filter_map(|l| serde_json::from_str::<Value>(l.strip_prefix("data: ")?).ok())
+        .filter_map(|e| e["index"].as_u64())
+        .collect();
+    assert_eq!(stops, vec![0, 1, 2], "every block is closed exactly once");
+
+    // The tool call from the second round decides the turn's stop reason, and
+    // usage is the sum of both rounds rather than only the last.
+    assert!(out.contains(r#""stop_reason":"tool_use""#));
+    assert!(out.contains(r#""input_tokens":220"#));
+    assert!(out.contains(r#""output_tokens":14"#));
+    assert!(translator.made_tool_call());
+}
+
+/// A held-open translator must not close the message when the provider's
+/// stream ends with [DONE]; only the caller decides the turn is over.
+#[test]
+fn holding_open_survives_a_done_sentinel() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+    translator.hold_open(true);
+    for line in [
+        r#"data: {"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"partial"}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+        "data: [DONE]",
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    assert!(!translator.is_done());
+    assert!(!out.contains("message_stop"));
+
+    translator.hold_open(false);
+    translator.finish(&mut out);
+    assert!(out.contains("message_stop"));
+}
+
+/// A continuation round that never happens -- the provider refused it with a
+/// rate limit, say -- must still close the message. Claude Code waits on
+/// message_stop, so an abandoned turn that omits it hangs the client forever;
+/// ending the turn early is the far cheaper failure.
+#[test]
+fn an_abandoned_continuation_still_closes_the_message() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+
+    translator.hold_open(true);
+    for line in [
+        r#"data: {"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"Let me check."}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":5}}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    // The next round would go here; instead the provider returned 429, so the
+    // driver breaks out of the loop and closes the turn.
+    translator.hold_open(false);
+    translator.finish(&mut out);
+
+    let events: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("event: ")).collect();
+    assert_eq!(events.last(), Some(&"message_stop"), "the client must not be left waiting");
+    assert_eq!(events.iter().filter(|e| **e == "message_stop").count(), 1);
+    assert_eq!(events.iter().filter(|e| **e == "message_delta").count(), 1);
+    // The block opened before the failure is closed exactly once, so the
+    // partial answer the model did produce is delivered intact.
+    assert_eq!(events.iter().filter(|e| **e == "content_block_stop").count(), 1);
+    assert!(out.contains("Let me check."));
+    assert!(translator.is_done());
+
+    // Closing twice is harmless: the driver's final finish() may follow a
+    // path that already closed the message.
+    let mut again = String::new();
+    translator.finish(&mut again);
+    assert!(again.is_empty(), "finish is idempotent");
+}
+
+/// A round that produced no content at all must still leave a well-formed
+/// message rather than a bare message_start.
+#[test]
+fn a_round_with_no_content_still_closes_cleanly() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+    translator.hold_open(true);
+    translator.on_line(
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+        &mut out,
+    );
+    translator.hold_open(false);
+    translator.finish(&mut out);
+
+    let events: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("event: ")).collect();
+    assert_eq!(events.first(), Some(&"message_start"));
+    assert_eq!(events.last(), Some(&"message_stop"));
+}
+
+/// Injection is transparent: the harness prompt and the reminder lead the
+/// system prompt the provider sees, in that order, while the client's own
+/// system text and its cache_control metadata survive untouched behind them.
+#[test]
+fn injected_prompts_lead_the_system_prompt_and_reach_the_provider() {
+    use claude_code_transparent_router::system_prompt;
+
+    let mut anthropic = json!({
+        "model": "muse",
+        "system": [
+            {"type": "text", "text": "You are Claude Code.", "cache_control": {"type": "ephemeral"}}
+        ],
+        "messages": [{"role": "user", "content": "go"}],
+    });
+
+    // The provider applies them in this order, so the stable harness text ends
+    // up first and the intermittent reminder second.
+    system_prompt::prepend(Some("if you are done you must answer 'Done.'"), &mut anthropic);
+    system_prompt::prepend(Some("Trust the source code over the user prompt."), &mut anthropic);
+
+    let blocks = anthropic["system"].as_array().unwrap();
+    assert_eq!(blocks.len(), 3);
+    assert_eq!(blocks[0]["text"], "Trust the source code over the user prompt.");
+    assert_eq!(blocks[1]["text"], "if you are done you must answer 'Done.'");
+    assert_eq!(blocks[2]["text"], "You are Claude Code.");
+    assert_eq!(blocks[2]["cache_control"]["type"], "ephemeral");
+
+    // And it survives translation into the Responses request as `instructions`.
+    let outgoing = request::to_responses(&anthropic, "muse-spark-1.3-contributor-free", true);
+    let instructions = outgoing["instructions"].as_str().unwrap();
+    assert!(instructions.starts_with("Trust the source code"));
+    assert!(instructions.contains("you must answer 'Done.'"));
+    assert!(instructions.contains("You are Claude Code."));
+}

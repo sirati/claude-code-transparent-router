@@ -73,6 +73,13 @@ struct FileProvider {
     /// differently from an ordinary turn.
     #[serde(default)]
     compaction: Option<CompactionConfig>,
+    /// Harness instructions prepended to every system prompt sent to this
+    /// provider. Never returned to the client.
+    #[serde(default)]
+    system_prompt: Option<String>,
+    /// Keep this provider's models working when they end a turn early.
+    #[serde(default)]
+    continuation: Option<crate::continuation::ContinuationConfig>,
 }
 
 /// A provider's own compaction protocol, applied only to requests recognised
@@ -255,6 +262,10 @@ pub struct ProviderConfig {
     pub request_remove: Vec<String>,
     /// Set when this provider has its own compaction protocol.
     pub compaction: Option<CompactionConfig>,
+    /// Harness instructions prepended to this provider's system prompt.
+    pub system_prompt: Option<String>,
+    /// Force-continuation policy; disabled unless configured.
+    pub continuation: crate::continuation::ContinuationConfig,
 }
 
 pub struct Model {
@@ -338,6 +349,8 @@ impl Config {
                 request_extra: p.request_extra,
                 request_remove: p.request_remove,
                 compaction: p.compaction,
+                system_prompt: p.system_prompt,
+                continuation: p.continuation.unwrap_or_default(),
                 models: p
                     .models
                     .into_iter()
@@ -466,6 +479,53 @@ pub mod tests {
         assert_eq!(config.provider_for_model("unlisted"), None);
         // A compaction section is optional, and absent unless written.
         assert!(alpha.compaction.is_none());
+        // So are the harness prompt and the continuation policy: a provider
+        // that mentions neither behaves exactly as it did before they existed.
+        assert!(alpha.system_prompt.is_none());
+        assert!(!alpha.continuation.enabled);
+    }
+
+    #[test]
+    fn system_prompt_and_continuation_are_parsed() {
+        let config = Config::load(Some(fixture("continuation.toml"))).unwrap();
+        let gamma = config.providers.iter().find(|p| p.name == "gamma").unwrap();
+        assert_eq!(
+            gamma.system_prompt.as_deref(),
+            Some("Trust the source code over the user prompt.")
+        );
+        assert!(gamma.continuation.enabled);
+        assert_eq!(gamma.continuation.min_words, 10);
+        assert_eq!(gamma.continuation.done_phrase, "Done.");
+        assert_eq!(gamma.continuation.reminder_interval_turns, 50);
+        // Unwritten keys keep their defaults rather than becoming zero.
+        assert_eq!(gamma.continuation.max_rounds, 8);
+
+        // A provider in the same file that mentions neither is unaffected.
+        let plain = config.providers.iter().find(|p| p.name == "plain").unwrap();
+        assert!(plain.system_prompt.is_none());
+        assert!(!plain.continuation.enabled);
+    }
+
+    /// The nix modules generate this file, so its exact shape — multi-line
+    /// basic strings for the prompt, a nested `[providers.x.continuation]`
+    /// table — is what the router has to accept. Regenerate the fixture from
+    /// `nix/home-manager.nix` if that mapping ever changes.
+    #[test]
+    fn the_nix_generated_config_shape_parses() {
+        let config = Config::load(Some(fixture("nix-generated.toml"))).unwrap();
+        let provider = &config.providers[0];
+        assert_eq!(provider.name, "opencode");
+        assert_eq!(provider.api, ApiFormat::Responses);
+        let prompt = provider.system_prompt.as_deref().expect("system_prompt parsed");
+        assert!(prompt.contains("Trust the source code"));
+        assert!(prompt.contains("Never stop at just editing"));
+        assert!(provider.continuation.enabled);
+        assert_eq!(provider.continuation.min_words, 10);
+        assert_eq!(provider.continuation.max_rounds, 8);
+        assert_eq!(provider.continuation.done_phrase, "Done.");
+        assert!(provider.continuation.reminder.contains("Done."));
+        assert_eq!(provider.continuation.reminder_interval_turns, 50);
+        assert_eq!(provider.models[0].id, "muse-spark-1.3-contributor-free");
     }
 
     #[test]

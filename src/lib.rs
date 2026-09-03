@@ -4,6 +4,7 @@ pub mod catalog;
 pub mod compact;
 pub mod config;
 pub mod content;
+pub mod continuation;
 pub mod credentials;
 pub mod effort;
 pub mod headers;
@@ -16,6 +17,7 @@ pub mod providers;
 pub mod route;
 pub mod sse;
 pub mod ssh_proxy;
+pub mod system_prompt;
 pub mod tui;
 pub mod user_config;
 
@@ -79,6 +81,8 @@ pub struct AppState {
     pub listen: std::net::SocketAddr,
     /// One-shot bypass armed by the override phrase.
     pub compact_override: compact::Override,
+    /// Paces the force-continuation reminder across a conversation's turns.
+    pub reminders: Arc<continuation::ReminderTracker>,
 }
 
 impl AppState {

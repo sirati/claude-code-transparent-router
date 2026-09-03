@@ -24,6 +24,8 @@ pub async fn messages(
         Err(err) => return proxy_error(&format!("request body is not valid JSON: {err}")),
     };
     request["model"] = json!(real_model);
+    // Harness instructions lead the system prompt; the client never sees them.
+    crate::system_prompt::prepend(provider.system_prompt.as_deref(), &mut request);
     let source = request.clone();
     if let Some(level) = crate::effort::apply(provider.effort.as_ref(), &source, &mut request) {
         tracing::debug!(provider = provider.name, effort = level, "effort mapped");

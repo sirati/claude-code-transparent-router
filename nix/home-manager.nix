@@ -43,6 +43,16 @@ let
         }
         // lib.optionalAttrs (p.requestExtra != { }) { request_extra = p.requestExtra; }
         // lib.optionalAttrs (p.requestRemove != [ ]) { request_remove = p.requestRemove; }
+        // lib.optionalAttrs (p.systemPrompt != null) { system_prompt = p.systemPrompt; }
+        // lib.optionalAttrs (p.continuation != null) {
+          continuation = {
+            inherit (p.continuation) enabled reminder;
+            min_words = p.continuation.minWords;
+            done_phrase = p.continuation.donePhrase;
+            reminder_interval_turns = p.continuation.reminderIntervalTurns;
+            max_rounds = p.continuation.maxRounds;
+          };
+        }
       ) cfg.providers;
     }
     # TOML has no null, so an unset choice is an absent key.
@@ -463,6 +473,100 @@ in
             description = ''
               Top-level translated request fields to omit for this provider.
             '';
+          };
+
+          systemPrompt = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            example = "Always reproduce the bug before fixing it.";
+            description = ''
+              Harness instructions prepended to the system prompt of every
+              request to this provider. A model co-trained with a particular
+              agent harness behaves markedly better when that harness's own
+              instructions lead the prompt.
+
+              The injection is invisible to Claude Code: it exists only in the
+              outgoing request, never in the reply or the transcript. It leads
+              the prompt rather than trailing it so the prefix stays stable
+              across a conversation, which keeps prompt caching effective.
+            '';
+          };
+
+          continuation = lib.mkOption {
+            default = null;
+            example = {
+              enabled = true;
+            };
+            description = ''
+              Keep this provider's models working when they end a turn early.
+
+              Some models narrate the tool call they are about to make and
+              then stop, with a well-formed end_turn and no tool call. Claude
+              Code cannot tell that from finished work, so the agent sits idle
+              until a human nudges it.
+
+              With this enabled the router teaches the model an explicit
+              end-of-work signal, and re-asks the provider whenever a turn ends
+              without it -- appending the model's own partial answer as an
+              assistant message, so no user or system turn is fabricated. The
+              rounds are spliced into one Anthropic message, so Claude Code
+              sees a single continuous turn.
+
+              Turns ending in a tool call are never continued: the client has
+              to run the tool first.
+            '';
+            type = lib.types.nullOr (lib.types.submodule {
+              options = {
+                enabled = lib.mkOption {
+                  type = lib.types.bool;
+                  default = true;
+                  description = "Turn force-continuation on for this provider.";
+                };
+                minWords = lib.mkOption {
+                  type = lib.types.int;
+                  default = 10;
+                  description = ''
+                    A turn shorter than this many words, with no tool call,
+                    counts as a stall and prompts the reminder.
+                  '';
+                };
+                donePhrase = lib.mkOption {
+                  type = lib.types.str;
+                  default = "Done.";
+                  description = ''
+                    What the model must answer, alone, to end its work.
+                    Matched on letters and digits only, so case and trailing
+                    punctuation do not leave a finished agent spinning.
+                  '';
+                };
+                reminder = lib.mkOption {
+                  type = lib.types.lines;
+                  default = "if you are done with all tasks you must answer 'Done.' and nothing else";
+                  description = ''
+                    The instruction taught to the model. Injected the same way
+                    as systemPrompt, and equally invisible to the client.
+                  '';
+                };
+                reminderIntervalTurns = lib.mkOption {
+                  type = lib.types.int;
+                  default = 50;
+                  description = ''
+                    Assistant turns that must pass before the reminder is
+                    stated again, so it costs almost nothing over a long
+                    conversation.
+                  '';
+                };
+                maxRounds = lib.mkOption {
+                  type = lib.types.int;
+                  default = 8;
+                  description = ''
+                    Hard cap on extra provider round-trips within one turn.
+                    Without it a model that never says the phrase would be
+                    re-asked indefinitely.
+                  '';
+                };
+              };
+            });
           };
         };
       });

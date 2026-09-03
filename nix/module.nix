@@ -253,6 +253,63 @@ in
               return an error saying so.
             '';
           };
+
+          systemPrompt = lib.mkOption {
+            type = lib.types.nullOr lib.types.lines;
+            default = null;
+            example = "Always reproduce the bug before fixing it.";
+            description = ''
+              Harness instructions prepended to the system prompt of every
+              request to this provider, for models co-trained with a
+              particular agent harness. Invisible to Claude Code: the text
+              exists only in the outgoing request.
+            '';
+          };
+
+          continuation = lib.mkOption {
+            default = null;
+            example = { enabled = true; };
+            description = ''
+              Keep this provider's models working when they end a turn early,
+              by teaching them an explicit end-of-work phrase and re-asking
+              the provider whenever a turn ends without it. See the
+              home-manager module for the full description.
+            '';
+            type = lib.types.nullOr (lib.types.submodule {
+              options = {
+                enabled = lib.mkOption {
+                  type = lib.types.bool;
+                  default = true;
+                  description = "Turn force-continuation on for this provider.";
+                };
+                minWords = lib.mkOption {
+                  type = lib.types.int;
+                  default = 10;
+                  description = "Turns shorter than this, with no tool call, count as a stall.";
+                };
+                donePhrase = lib.mkOption {
+                  type = lib.types.str;
+                  default = "Done.";
+                  description = "What the model must answer, alone, to end its work.";
+                };
+                reminder = lib.mkOption {
+                  type = lib.types.lines;
+                  default = "if you are done with all tasks you must answer 'Done.' and nothing else";
+                  description = "The instruction taught to the model.";
+                };
+                reminderIntervalTurns = lib.mkOption {
+                  type = lib.types.int;
+                  default = 50;
+                  description = "Assistant turns between restatements of the reminder.";
+                };
+                maxRounds = lib.mkOption {
+                  type = lib.types.int;
+                  default = 8;
+                  description = "Cap on extra provider round-trips within one turn.";
+                };
+              };
+            });
+          };
         };
       });
     };

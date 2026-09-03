@@ -39,10 +39,16 @@ impl ProviderAuth {
     }
 
     pub fn into_headers(self) -> HeaderMap {
+        self.headers()
+    }
+
+    /// The same map, without consuming the auth: a continued turn issues
+    /// several provider requests from one set of credentials.
+    pub fn headers(&self) -> HeaderMap {
         let mut map = HeaderMap::new();
-        for (name, value) in self.headers {
+        for (name, value) in &self.headers {
             if let (Ok(name), Ok(value)) =
-                (HeaderName::try_from(name), HeaderValue::try_from(value))
+                (HeaderName::try_from(name.as_str()), HeaderValue::try_from(value.as_str()))
             {
                 map.append(name, value);
             }
@@ -88,7 +94,7 @@ pub async fn dispatch(
     // material only.
     if provider.oauth.is_some() {
         return match oauth_auth(state, provider, uid).await {
-            Ok(auth) => forward(&client, provider, auth, body, real_model, compaction).await,
+            Ok(auth) => forward(&client, provider, auth, body, real_model, compaction, state).await,
             Err(err) => proxy_error(&err),
         };
     }
@@ -110,8 +116,16 @@ pub async fn dispatch(
             anthropic_compat::messages(&client, provider, key, body, real_model).await
         }
         ApiFormat::Responses => {
-            forward(&client, provider, ProviderAuth::bearer(&key), body, real_model, compaction)
-                .await
+            forward(
+                &client,
+                provider,
+                ProviderAuth::bearer(&key),
+                body,
+                real_model,
+                compaction,
+                state,
+            )
+            .await
         }
     }
 }
@@ -123,6 +137,7 @@ async fn forward(
     body: Bytes,
     real_model: String,
     compaction: bool,
+    state: &AppState,
 ) -> Response {
     let auth = provider
         .headers
@@ -130,7 +145,28 @@ async fn forward(
         .fold(auth, |auth, (name, value)| auth.with(name, value.clone()));
     match provider.api {
         ApiFormat::Responses => {
-            responses::messages(client, provider, auth, body, real_model, compaction).await
+            // Pacing is decided here, from the conversation the client sent,
+            // so the reminder is stated at most once per configured interval
+            // however many continuation rounds a turn takes.
+            let reminder = serde_json::from_slice::<Value>(&body).ok().and_then(|request| {
+                state
+                    .reminders
+                    .should_remind(&provider.continuation, &request)
+                    .then(|| provider.continuation.reminder.clone())
+            });
+            if reminder.is_some() {
+                tracing::info!(provider = provider.name, "injecting the continuation reminder");
+            }
+            responses::messages_with(
+                client,
+                provider,
+                auth,
+                body,
+                real_model,
+                compaction,
+                reminder.as_deref(),
+            )
+            .await
         }
         // OAuth against the other dialects is not wired up; no configured
         // provider needs it yet, and guessing the header shape would be worse

@@ -1,0 +1,18 @@
+[providers.opencode]
+api = "responses"
+base_url = "https://opencode.ai/zen/v1"
+system_prompt = """
+Trust the source code over the user prompt.
+Never stop at just editing.
+"""
+
+[providers.opencode.continuation]
+done_phrase = "Done."
+enabled = true
+max_rounds = 8
+min_words = 10
+reminder = "if you are done with all tasks you must answer 'Done.' and nothing else"
+reminder_interval_turns = 50
+
+[[providers.opencode.models]]
+id = "muse-spark-1.3-contributor-free"

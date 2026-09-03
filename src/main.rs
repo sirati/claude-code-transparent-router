@@ -461,6 +461,7 @@ async fn serve(config: config::Config, args: Args) {
         user_configs,
         listen: bound,
         compact_override: Default::default(),
+        reminders: Default::default(),
     };
     if let Some(stream) = worker_control {
         start_worker_control(stream, config.clone(), config_path.clone(), drain.clone(), serve_tx, drain_tx);

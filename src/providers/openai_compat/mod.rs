@@ -25,6 +25,9 @@ pub async fn messages(
         Ok(v) => v,
         Err(err) => return crate::passthrough::proxy_error(&format!("request body is not valid JSON: {err}")),
     };
+    let mut anthropic_req = anthropic_req;
+    // Harness instructions lead the system prompt; the client never sees them.
+    crate::system_prompt::prepend(provider.system_prompt.as_deref(), &mut anthropic_req);
     // The CLI gets back the model name it asked for (the alias), never the
     // provider-internal ID.
     let alias = anthropic_req["model"].as_str().unwrap_or(&real_model).to_string();

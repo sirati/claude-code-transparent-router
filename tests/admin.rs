@@ -25,6 +25,7 @@ fn test_app(credentials_dir: &std::path::Path) -> axum::Router {
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
+        reminders: Default::default(),
     })
 }
 
@@ -107,6 +108,7 @@ async fn picker_model_leads_the_row_list() {
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
+        reminders: Default::default(),
     });
 
     let response = app
@@ -168,6 +170,7 @@ fn per_user_mode_resolves_each_uid_to_its_own_home() {
         config: Arc::new(ArcSwap::from(config)),
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
+        reminders: Default::default(),
     };
 
     // A real uid resolves to that user's own state directory.
@@ -196,6 +199,7 @@ fn single_user_mode_uses_one_store_for_everyone() {
         user_configs: None,
         listen: "127.0.0.1:9999".parse().unwrap(),
         compact_override: Default::default(),
+        reminders: Default::default(),
     };
 
     state.credentials(Some(1000)).set("alpha", "sk-shared").unwrap();

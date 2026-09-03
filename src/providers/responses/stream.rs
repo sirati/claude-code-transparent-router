@@ -17,16 +17,47 @@ use crate::passthrough::{PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE};
 use crate::sse::anthropic as sse;
 
 pub fn response(upstream: reqwest::Response, alias_model: String) -> Response {
+    sse_response(Body::from_stream(translate(
+        upstream.bytes_stream(),
+        alias_model,
+    )))
+}
+
+/// An SSE response carrying already-translated Anthropic frames.
+pub fn sse_response(body: Body) -> Response {
     Response::builder()
         .status(200)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header(PROXY_ORIGIN_HEADER, PROXY_ORIGIN_VALUE)
-        .body(Body::from_stream(translate(
-            upstream.bytes_stream(),
-            alias_model,
-        )))
+        .body(body)
         .expect("stream response")
+}
+
+/// Feed one provider response into `translator`, yielding Anthropic frames as
+/// they are produced. The message is not closed: the caller decides whether
+/// another round follows.
+pub fn drain_round(
+    translator: &mut Translator,
+    buf: &mut Vec<u8>,
+    chunk: Result<Bytes, reqwest::Error>,
+) -> Result<String, String> {
+    let mut out = String::new();
+    match chunk {
+        Ok(bytes) => {
+            buf.extend_from_slice(&bytes);
+            while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = buf.drain(..=pos).collect();
+                translator.on_line(&String::from_utf8_lossy(&line), &mut out);
+            }
+            Ok(out)
+        }
+        Err(err) => Err(format!("[{PROXY_ORIGIN_VALUE}] provider stream failed: {err}")),
+    }
+}
+
+pub fn error_frame(message: &str) -> String {
+    sse::error(message)
 }
 
 fn translate(
@@ -89,6 +120,18 @@ pub struct Translator {
     stop: &'static str,
     input_tokens: u64,
     output_tokens: u64,
+    /// Assistant text seen across every round of this turn, for the
+    /// continuation decision and for the prefill that drives the next round.
+    text: String,
+    /// Set when the provider ended a round without a tool call, so the turn
+    /// may be continuable.
+    made_tool_call: bool,
+    /// True once a terminal event arrived; distinguishes "the round ended" from
+    /// "the connection dropped".
+    completed: bool,
+    /// While set, a terminal provider event ends the round but not the
+    /// Anthropic message, so another round can be spliced in after it.
+    hold_open: bool,
 }
 
 impl Translator {
@@ -102,7 +145,51 @@ impl Translator {
             stop: "end_turn",
             input_tokens: 0,
             output_tokens: 0,
+            text: String::new(),
+            made_tool_call: false,
+            completed: false,
+            hold_open: false,
         }
+    }
+
+    /// Hold the Anthropic message open across provider responses, so a
+    /// continuation round can be spliced into the same message.
+    pub fn hold_open(&mut self, hold: bool) {
+        self.hold_open = hold;
+    }
+
+    /// Everything the assistant has said this turn, across all rounds.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn made_tool_call(&self) -> bool {
+        self.made_tool_call
+    }
+
+    /// Did the round end on its own terms? A dropped connection is not
+    /// something to paper over with a continuation.
+    pub fn completed(&self) -> bool {
+        self.completed
+    }
+
+    pub fn is_done(&self) -> bool {
+        self.done
+    }
+
+    /// Finish the round without closing the Anthropic message, ready for
+    /// another provider response to be fed in.
+    ///
+    /// Open blocks are closed — the next round's items are separate blocks —
+    /// but `next_index` keeps counting, so indices stay unique across rounds,
+    /// and the provider's `output_index` numbering starting over at zero
+    /// cannot collide with a block from the round before.
+    pub fn end_round(&mut self, out: &mut String) {
+        for open in std::mem::take(&mut self.open).into_values() {
+            self.emit_arguments(&open, out);
+            out.push_str(&sse::content_block_stop(open.index));
+        }
+        self.completed = false;
     }
 
     /// Feed one SSE line; Anthropic frames are appended to `out`.
@@ -112,7 +199,10 @@ impl Translator {
         };
         let payload = payload.trim();
         if payload == "[DONE]" {
-            self.finish(out);
+            // A held-open message ends only when the caller stops continuing.
+            if !self.hold_open {
+                self.finish(out);
+            }
             return;
         }
         let Ok(event) = serde_json::from_str::<Value>(payload) else {
@@ -144,6 +234,7 @@ impl Translator {
             "response.output_text.delta" => {
                 if let Some(text) = event["delta"].as_str() {
                     let index = self.ensure(output_index, Kind::Text, out);
+                    self.text.push_str(text);
                     out.push_str(&sse::text_delta(index, text));
                 }
             }
@@ -173,7 +264,10 @@ impl Translator {
                 if event["response"]["status"] == Value::String("incomplete".into()) {
                     self.stop = "max_tokens";
                 }
-                self.finish(out);
+                self.completed = true;
+                if !self.hold_open {
+                    self.finish(out);
+                }
             }
             "response.failed" | "error" => {
                 let message = event["response"]["error"]["message"]
@@ -224,6 +318,7 @@ impl Translator {
         let (kind, block, name) = match item["type"].as_str() {
             Some("function_call") => {
                 self.stop = "tool_use";
+                self.made_tool_call = true;
                 let fallback = format!("toolu_{}", self.next_index);
                 let id = item["call_id"]
                     .as_str()
@@ -287,12 +382,15 @@ impl Translator {
         out.push_str(&sse::input_json_delta(open.index, &input.to_string()));
     }
 
+    /// Usage accumulates: a continued turn is several provider responses
+    /// reported to Claude Code as one message, so its token counts are the
+    /// sum of every round's.
     fn read_usage(&mut self, response: &Value) {
         if let Some(n) = response["usage"]["input_tokens"].as_u64() {
-            self.input_tokens = n;
+            self.input_tokens += n;
         }
         if let Some(n) = response["usage"]["output_tokens"].as_u64() {
-            self.output_tokens = n;
+            self.output_tokens += n;
         }
     }
 }
