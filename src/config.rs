@@ -560,6 +560,30 @@ pub mod tests {
         assert_eq!(effort.field, "output_config.effort");
     }
 
+    /// Muse reaches Zen on the Responses dialect and cannot turn reasoning
+    /// off, so `none` has to map to the shallowest level the model has rather
+    /// than to a value the provider rejects.
+    #[test]
+    fn muse_preset_maps_every_level_onto_the_models_own_ladder() {
+        let config = Config::load(Some(fixture("muse-preset.toml"))).unwrap();
+        let muse = config.providers.iter().find(|p| p.name == "muse").unwrap();
+        assert_eq!(muse.base_url, "https://opencode.ai/zen/v1");
+        assert_eq!(muse.api, ApiFormat::Responses);
+        assert!(muse.models[0].has_large_context());
+
+        let effort = muse.effort.as_ref().expect("preset supplies an effort block");
+        // The Responses API reads reasoning.effort, and output_config must not
+        // survive alongside it.
+        assert_eq!(effort.field, "reasoning.effort");
+        assert_eq!(effort.remove, vec!["output_config".to_string()]);
+        assert_eq!(effort.map.get("none").map(String::as_str), Some("minimal"));
+        assert_eq!(effort.map.get("max").map(String::as_str), Some("max"));
+        assert_eq!(effort.map.get("high").map(String::as_str), Some("high"));
+        // No default: with nothing requested the provider applies its own,
+        // which a bare probe showed to be `high`.
+        assert!(effort.default.is_none());
+    }
+
     #[test]
     fn explicitly_named_missing_config_is_an_error() {
         assert!(Config::load(Some(fixture("does-not-exist.toml"))).is_err());

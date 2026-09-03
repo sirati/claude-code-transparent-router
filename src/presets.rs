@@ -11,6 +11,7 @@ pub const FIELD: &str = "preset";
 const PRESETS: &[(&str, &str)] = &[
     ("codex", include_str!("../presets/codex.toml")),
     ("deepseek", include_str!("../presets/deepseek.toml")),
+    ("muse", include_str!("../presets/muse.toml")),
 ];
 
 pub fn names() -> Vec<&'static str> {

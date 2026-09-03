@@ -313,9 +313,14 @@ in
           };
 
           effort = lib.mkOption {
-            type = lib.types.nullOr (lib.types.enum [ "low" "medium" "high" "xhigh" "max" ]);
+            type = lib.types.nullOr (lib.types.enum [ "none" "low" "medium" "high" "xhigh" "max" ]);
             default = null;
-            description = "Reasoning effort while this agent is active; null inherits the session.";
+            description = ''
+              Reasoning effort while this agent is active; null inherits the
+              session. Levels are translated per provider, so "none" reaches a
+              model that cannot disable reasoning as its shallowest setting
+              rather than as an error.
+            '';
           };
 
           tools = lib.mkOption {

@@ -607,3 +607,50 @@ fn without_effort_config_the_level_never_reaches_the_provider() {
     assert_eq!(level, None);
     assert_eq!(outgoing, before);
 }
+
+/// With the muse preset's effort block the level does reach the provider,
+/// in the Responses spelling, with the Anthropic one removed. This is the
+/// half that was missing while the opencode providers had no effort config.
+#[test]
+fn the_muse_effort_block_moves_the_level_into_the_responses_body() {
+    use claude_code_transparent_router::config::{Config, EffortConfig};
+
+    let config = Config::load(Some(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/muse-preset.toml"),
+    ))
+    .unwrap();
+    let effort: &EffortConfig = config.providers[0].effort.as_ref().unwrap();
+
+    let translate = |level: &str| {
+        let anthropic = json!({
+            "model": "muse",
+            "output_config": {"effort": level},
+            "messages": [{"role": "user", "content": "go"}],
+        });
+        let mut outgoing =
+            request::to_responses(&anthropic, "muse-spark-1.3-contributor-free", true);
+        let applied =
+            claude_code_transparent_router::effort::apply(Some(effort), &anthropic, &mut outgoing);
+        (applied, outgoing)
+    };
+
+    let (applied, outgoing) = translate("max");
+    assert_eq!(applied.as_deref(), Some("max"));
+    assert_eq!(outgoing["reasoning"]["effort"], "max");
+    assert!(outgoing.get("output_config").is_none(), "the Anthropic spelling is dropped");
+
+    // Reasoning cannot be switched off on this model, so "none" arrives as
+    // the shallowest real level rather than as a value that would 400.
+    let (applied, outgoing) = translate("none");
+    assert_eq!(applied.as_deref(), Some("minimal"));
+    assert_eq!(outgoing["reasoning"]["effort"], "minimal");
+
+    // Nothing requested leaves the field unset, so Zen applies its own default.
+    let anthropic = json!({"model": "muse", "messages": []});
+    let mut outgoing = request::to_responses(&anthropic, "muse-spark-1.3-contributor-free", true);
+    let applied =
+        claude_code_transparent_router::effort::apply(Some(effort), &anthropic, &mut outgoing);
+    assert_eq!(applied, None);
+    assert!(outgoing.get("reasoning").is_none());
+}

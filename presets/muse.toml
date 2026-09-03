@@ -1,0 +1,32 @@
+# Meta's Muse Spark via OpenCode Zen's gateway.
+#
+# Contributor-tier models are free in exchange for Meta being permitted to
+# train on the prompts and completions sent to them. Do not point this at
+# anything confidential.
+#
+# Credential: set it in the router TUI, or OPENCODE_API_KEY.
+base_url = "https://opencode.ai/zen/v1"
+# Muse only answers on the Responses endpoint here: the chat-completions
+# dialect returns a bare 500 for this model. Responses is also the dialect
+# Meta recommends for multi-step agent loops, since it can replay reasoning
+# across turns where chat-completions cannot.
+api = "responses"
+# 1,048,576 context and 131,072 output are the model's documented limits. At
+# 1M or more the router names the model with Claude Code's [1m] marker, which
+# assumes exactly 1,000,000 and so stays inside the real window.
+models = [
+  { id = "muse-spark-1.3-contributor-free", name = "Muse Spark 1.3 Free", context_window = 1048576, max_output_tokens = 131072 },
+]
+
+# Reasoning is mandatory on this model -- there is no setting that turns it
+# off, and `none` is rejected outright -- so `none` maps to the shallowest
+# level the model has rather than to nothing. Omitting the field entirely
+# leaves Zen applying its own default, which a bare probe showed to be `high`.
+#
+# The Responses API reads reasoning.effort, not Anthropic's
+# output_config.effort, so the field has to move; output_config is dropped so
+# the provider never sees two conflicting spellings of the same setting.
+[effort]
+field = "reasoning.effort"
+remove = ["output_config"]
+map = { none = "minimal", low = "low", medium = "medium", high = "high", xhigh = "xhigh", max = "max" }
