@@ -149,6 +149,19 @@ pub async fn messages_with(
 /// trick: no user or system message is fabricated, the model simply sees its
 /// own unfinished turn and carries on. The Anthropic message stays open
 /// across rounds, so Claude Code sees one continuous assistant turn.
+///
+/// Failure handling turns on whether a continuation has already been spliced
+/// in, because an error frame and a clean close cannot both be delivered:
+///
+/// * `round == 0` — nothing extra has been streamed, so the turn is still an
+///   ordinary one and the error passes through unchanged. Behaviour here is
+///   identical to a provider without continuation configured.
+/// * `round > 0` — the message is open and holding real content. It is closed
+///   with the normal `message_delta`/`message_stop` pair and the error is
+///   dropped to the log, because a client that does not treat an error frame
+///   as terminal would otherwise wait forever on a `message_stop` that never
+///   arrives. Ending early is at worst the stall this feature exists to
+///   prevent; hanging is unbounded.
 fn continued_stream(
     client: reqwest::Client,
     provider: &ProviderConfig,
@@ -186,21 +199,38 @@ fn continued_stream(
                         }
                     }
                     Err(message) => {
-                        yield Ok(stream::error_frame(&message));
+                        // Before any continuation the turn is an ordinary one:
+                        // the error is the whole outcome, and it passes through
+                        // exactly as it would without this feature. Once a
+                        // continuation round has been spliced in, the message
+                        // is already open and carrying real content, so an
+                        // error frame cannot also be a terminator — the client
+                        // would sit on a half-open turn. Past that point the
+                        // error is dropped in favour of closing cleanly, and
+                        // survives only in the log.
+                        if round == 0 {
+                            yield Ok(stream::error_frame(&message));
+                        } else {
+                            tracing::warn!(
+                                provider = name,
+                                round,
+                                error = message,
+                                "stream failed mid-continuation; closing the turn with what the model produced"
+                            );
+                        }
                         failed = true;
                         break;
                     }
                 }
             }
             if failed {
-                // The error frame said what went wrong; close the message
-                // behind it so a client that keeps waiting for message_stop
-                // is not left hanging on a half-open turn.
-                let mut out = String::new();
-                translator.hold_open(false);
-                translator.finish(&mut out);
-                if !out.is_empty() {
-                    yield Ok(out);
+                if round > 0 {
+                    let mut out = String::new();
+                    translator.hold_open(false);
+                    translator.finish(&mut out);
+                    if !out.is_empty() {
+                        yield Ok(out);
+                    }
                 }
                 return;
             }
@@ -246,16 +276,14 @@ fn continued_stream(
                 .await;
             upstream = match sent {
                 Ok(response) if response.status().is_success() => response,
-                // A refused continuation ends the turn cleanly rather than
-                // raising an error mid-stream. The message is already open and
-                // carries real content, so it has to be closed with the normal
-                // message_delta/message_stop pair: an error frame at this point
-                // would leave a client that does not treat it as terminal
-                // waiting on a message_stop that never comes. Ending the turn
-                // is at worst the early stop this feature exists to prevent —
-                // exactly the behaviour of not having the feature at all —
-                // which is a far better failure than a hang. The reason is in
-                // the log, since the client cannot be told in-band.
+                // The turn is already open and carrying the model's first
+                // answer, so this cannot be reported as an error: an error
+                // frame a client does not treat as terminal would leave it
+                // waiting on a message_stop that never comes. The turn is
+                // closed with what the model did produce, which is at worst
+                // the early stop this feature exists to prevent -- the
+                // behaviour of not having the feature at all -- while a hang
+                // is unbounded. The reason lives in the log instead.
                 Ok(response) => {
                     tracing::warn!(
                         provider = name,
