@@ -132,6 +132,10 @@ pub struct Translator {
     /// While set, a terminal provider event ends the round but not the
     /// Anthropic message, so another round can be spliced in after it.
     hold_open: bool,
+    /// The provider reported an error in-band. The message is closed by
+    /// `done`, so a caller that has already streamed content needs this to
+    /// tell "ended in error" from "ended normally".
+    errored: bool,
 }
 
 impl Translator {
@@ -149,7 +153,26 @@ impl Translator {
             made_tool_call: false,
             completed: false,
             hold_open: false,
+            errored: false,
         }
+    }
+
+    /// Did the provider report an error in-band this turn?
+    pub fn errored(&self) -> bool {
+        self.errored
+    }
+
+    /// Close a message the provider ended with an error, once content has
+    /// already been streamed. The error frame is out; without the terminal
+    /// pair a client waiting on `message_stop` would wait forever.
+    pub fn close_after_error(&mut self, out: &mut String) {
+        if !self.errored {
+            return;
+        }
+        self.errored = false;
+        self.done = false;
+        self.hold_open = false;
+        self.finish(out);
     }
 
     /// Hold the Anthropic message open across provider responses, so a
@@ -190,6 +213,12 @@ impl Translator {
             out.push_str(&sse::content_block_stop(open.index));
         }
         self.completed = false;
+        // The turn's stop reason belongs to the round that actually ends it.
+        // A round truncated at the token cap reports `max_tokens`, but if the
+        // continuation then finishes normally the turn is not truncated —
+        // leaving it set would tell Claude Code to treat a completed turn as
+        // cut short.
+        self.stop = "end_turn";
     }
 
     /// Feed one SSE line; Anthropic frames are appended to `out`.
@@ -275,6 +304,7 @@ impl Translator {
                     .or_else(|| event["message"].as_str())
                     .unwrap_or("provider reported an error");
                 out.push_str(&sse::error(&format!("[{PROXY_ORIGIN_VALUE}] {message}")));
+                self.errored = true;
                 self.done = true;
             }
             _ => {}

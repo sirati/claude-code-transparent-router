@@ -178,6 +178,9 @@ fn continued_stream(
     let body = axum::body::Body::from_stream(async_stream::stream! {
         let mut translator = stream::Translator::new(alias);
         let mut outgoing = outgoing;
+        // The input as the client sent it. Each round's prefill replaces the
+        // previous one rather than stacking on it.
+        let input_base_len = outgoing["input"].as_array().map_or(0, Vec::len);
         let mut upstream = upstream;
         let mut round = 0usize;
 
@@ -235,6 +238,19 @@ fn continued_stream(
                 return;
             }
             if translator.is_done() {
+                // The provider reported an error in-band. Before any
+                // continuation that error is the whole outcome and stands on
+                // its own, exactly as without this feature. After one, the
+                // message is open and holding real content, so it has to be
+                // closed behind the error frame or a client waiting on
+                // message_stop waits forever.
+                if round > 0 && translator.errored() {
+                    let mut out = String::new();
+                    translator.close_after_error(&mut out);
+                    if !out.is_empty() {
+                        yield Ok(out);
+                    }
+                }
                 return;
             }
 
@@ -265,8 +281,7 @@ fn continued_stream(
                 "continuing a turn that ended without the done phrase"
             );
 
-            append_assistant_prefill(&mut outgoing, translator.text());
-            let sent = client
+            set_assistant_prefill(&mut outgoing, input_base_len, translator.text());            let sent = client
                 .post(format!("{base_url}/{path}"))
                 .headers(auth.headers())
                 .header("content-type", "application/json")
@@ -315,14 +330,21 @@ fn continued_stream(
     stream::sse_response(body)
 }
 
-/// Append the assistant's partial answer to the Responses input, so the next
-/// round continues it rather than starting over.
-fn append_assistant_prefill(outgoing: &mut Value, text: &str) {
+/// Replace the assistant prefill on the Responses input, so the next round
+/// continues the answer so far rather than starting over.
+///
+/// `base_len` is the input's length before any prefill was added. The prefill
+/// is rewritten rather than appended because `text` is cumulative across
+/// rounds: appending would leave round *n* carrying *n* assistant items whose
+/// contents are nested prefixes of each other, growing the input
+/// quadratically and showing the model its own opening sentence repeatedly.
+pub fn set_assistant_prefill(outgoing: &mut Value, base_len: usize, text: &str) {
     let text = text.trim();
     if text.is_empty() {
         return;
     }
     if let Some(input) = outgoing["input"].as_array_mut() {
+        input.truncate(base_len);
         input.push(serde_json::json!({
             "type": "message",
             "role": "assistant",

@@ -577,7 +577,9 @@ pub mod tests {
         assert_eq!(effort.field, "reasoning.effort");
         assert_eq!(effort.remove, vec!["output_config".to_string()]);
         assert_eq!(effort.map.get("none").map(String::as_str), Some("minimal"));
-        assert_eq!(effort.map.get("max").map(String::as_str), Some("max"));
+        // Probed: Zen rejects `max` as an unknown variant, so Claude Code's
+        // top level lands on the highest one the model actually has.
+        assert_eq!(effort.map.get("max").map(String::as_str), Some("xhigh"));
         assert_eq!(effort.map.get("high").map(String::as_str), Some("high"));
         // No default: with nothing requested the provider applies its own,
         // which a bare probe showed to be `high`.

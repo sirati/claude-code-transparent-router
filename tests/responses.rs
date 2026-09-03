@@ -635,9 +635,11 @@ fn the_muse_effort_block_moves_the_level_into_the_responses_body() {
         (applied, outgoing)
     };
 
+    // Zen rejects `max` outright ("unknown variant"), so Claude Code's top
+    // level has to arrive as the highest one the model really has.
     let (applied, outgoing) = translate("max");
-    assert_eq!(applied.as_deref(), Some("max"));
-    assert_eq!(outgoing["reasoning"]["effort"], "max");
+    assert_eq!(applied.as_deref(), Some("xhigh"));
+    assert_eq!(outgoing["reasoning"]["effort"], "xhigh");
     assert!(outgoing.get("output_config").is_none(), "the Anthropic spelling is dropped");
 
     // Reasoning cannot be switched off on this model, so "none" arrives as
@@ -653,4 +655,105 @@ fn the_muse_effort_block_moves_the_level_into_the_responses_body() {
         claude_code_transparent_router::effort::apply(Some(effort), &anthropic, &mut outgoing);
     assert_eq!(applied, None);
     assert!(outgoing.get("reasoning").is_none());
+}
+
+/// The prefill replaces the previous one instead of stacking. `text()` is
+/// cumulative, so appending each round would leave round n carrying n
+/// assistant items whose contents are nested prefixes of each other.
+#[test]
+fn the_prefill_is_rewritten_not_stacked_across_rounds() {
+    use claude_code_transparent_router::providers::responses::set_assistant_prefill;
+
+    let mut outgoing = json!({"input": [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "go"}]}
+    ]});
+    let base = outgoing["input"].as_array().unwrap().len();
+
+    set_assistant_prefill(&mut outgoing, base, "Let me check.");
+    set_assistant_prefill(&mut outgoing, base, "Let me check. Reading now.");
+    set_assistant_prefill(&mut outgoing, base, "Let me check. Reading now. Found it.");
+
+    let input = outgoing["input"].as_array().unwrap();
+    assert_eq!(input.len(), base + 1, "one prefill, however many rounds");
+    assert_eq!(input[0]["role"], "user", "the client's input is untouched");
+    assert_eq!(
+        input[base]["content"][0]["text"],
+        "Let me check. Reading now. Found it.",
+        "and it carries the whole answer so far"
+    );
+}
+
+/// A round truncated at the token cap that then continues to a normal finish
+/// is not a truncated turn. Leaving stop_reason at max_tokens would tell
+/// Claude Code to treat completed work as cut short.
+#[test]
+fn a_truncated_round_does_not_leave_the_turn_marked_max_tokens() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+
+    translator.hold_open(true);
+    for line in [
+        r#"data: {"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"cut off"}"#,
+        r#"data: {"type":"response.incomplete","response":{"status":"incomplete"}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    translator.end_round(&mut out);
+
+    for line in [
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":" and finished"}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    translator.hold_open(false);
+    translator.finish(&mut out);
+
+    assert!(out.contains(r#""stop_reason":"end_turn""#), "the finishing round decides");
+    assert!(!out.contains(r#""stop_reason":"max_tokens""#));
+}
+
+/// An in-band provider error after content has streamed must still close the
+/// message. The error frame alone leaves a client waiting on message_stop.
+#[test]
+fn an_in_band_error_mid_continuation_still_closes_the_message() {
+    let mut translator = stream::Translator::new("responses/test-model".into());
+    let mut out = String::new();
+
+    translator.hold_open(true);
+    for line in [
+        r#"data: {"type":"response.created","response":{"id":"resp_1"}}"#,
+        r#"data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message"}}"#,
+        r#"data: {"type":"response.output_text.delta","output_index":0,"delta":"Let me check."}"#,
+        r#"data: {"type":"response.completed","response":{"status":"completed"}}"#,
+    ] {
+        translator.on_line(line, &mut out);
+    }
+    translator.end_round(&mut out);
+
+    // The continuation round fails in-band.
+    translator.on_line(
+        r#"data: {"type":"response.failed","response":{"error":{"message":"rate limited"}}}"#,
+        &mut out,
+    );
+    assert!(translator.is_done());
+    assert!(translator.errored());
+
+    // Which is what the driver keys off after round 0.
+    translator.close_after_error(&mut out);
+
+    let events: Vec<&str> = out.lines().filter_map(|l| l.strip_prefix("event: ")).collect();
+    assert!(events.contains(&"error"), "the failure is still reported");
+    assert_eq!(events.last(), Some(&"message_stop"), "and the client is released");
+    assert_eq!(events.iter().filter(|e| **e == "message_stop").count(), 1);
+    assert!(out.contains("rate limited"));
+    assert!(out.contains("Let me check."), "content streamed before the error survives");
+
+    // Calling it again is a no-op: the message is closed exactly once.
+    let mut again = String::new();
+    translator.close_after_error(&mut again);
+    assert!(again.is_empty());
 }
