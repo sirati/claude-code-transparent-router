@@ -1,3 +1,6 @@
 /target
 /result
 /result-*
+
+# Ephemeral agent worktrees; each is its own checkout.
+.claude/worktrees/
