@@ -583,3 +583,27 @@ fn injected_prompts_lead_the_system_prompt_and_reach_the_provider() {
     assert!(instructions.contains("you must answer 'Done.'"));
     assert!(instructions.contains("You are Claude Code."));
 }
+
+/// A provider with no `effort` block silently drops the level: `to_responses`
+/// builds a fresh body and never copies `output_config`, and `effort::apply`
+/// is a no-op without config. So the agents' `effort: max` never reached
+/// muse -- it was neither translated nor forwarded, and could not have been
+/// the cause of a provider-side error.
+#[test]
+fn without_effort_config_the_level_never_reaches_the_provider() {
+    let anthropic = json!({
+        "model": "muse",
+        "output_config": {"effort": "max"},
+        "messages": [{"role": "user", "content": "go"}],
+    });
+    let mut outgoing = request::to_responses(&anthropic, "muse-spark-1.3-contributor-free", true);
+
+    assert!(outgoing.get("output_config").is_none(), "not copied verbatim");
+    assert!(outgoing.get("reasoning").is_none(), "and not translated");
+
+    // effort::apply with no provider config leaves the body exactly as it was.
+    let before = outgoing.clone();
+    let level = claude_code_transparent_router::effort::apply(None, &anthropic, &mut outgoing);
+    assert_eq!(level, None);
+    assert_eq!(outgoing, before);
+}
